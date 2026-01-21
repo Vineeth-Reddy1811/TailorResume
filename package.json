@@ -1,0 +1,10 @@
+{
+  "devDependencies": {
+    "@types/node": "^20.19.30",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
+  },
+  "scripts": {
+    "resume:convert": "ts-node convertAndNormalize.ts"
+  }
+}
