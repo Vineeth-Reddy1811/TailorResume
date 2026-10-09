@@ -1,0 +1,19 @@
+# macOS metadata
+.DS_Store
+
+# Personal resume files and extracted resume content
+/Data/input/resume/
+/Data/input/Resume.docx
+
+# Application-specific inputs and approvals
+/Data/input/experience-profile.json
+/Data/input/approved-additions.json
+/Data/input/ats-approved-changes.json
+/Data/input/job-description.example.txt
+
+# Example manifest currently contains a personal resume path and hash.
+# Remove this rule after replacing them with generic example values.
+/Data/input/approved-additions.example.json
+
+# Generated tailored resumes, proposals, and audit reports
+/Data/out/

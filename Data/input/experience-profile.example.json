@@ -1,0 +1,34 @@
+{
+  "sourceResume": "Data/input/Resume.docx",
+  "facts": [
+    {
+      "id": "fact-similar-line",
+      "verified": true,
+      "userConfirmed": true,
+      "requirements": ["Dependency Injection", "JDBC"],
+      "targetParagraphId": "p-0010",
+      "supplementText": "Used dependency injection and JDBC persistence within the Java application.",
+      "text": "Experience using dependency injection and JDBC persistence within the Java application.",
+      "source": "User-confirmed work experience"
+    },
+    {
+      "id": "fact-new-line",
+      "verified": true,
+      "userConfirmed": true,
+      "requirements": ["Power BI"],
+      "afterParagraphId": "p-0010",
+      "text": "New user-confirmed experience bullet to insert after the related role bullet.",
+      "source": "User-confirmed work experience"
+    }
+  ],
+  "verifiedSkills": [
+    {
+      "canonical": "Power BI",
+      "aliases": ["Power BI", "Microsoft Power BI"],
+      "verified": true,
+      "userConfirmed": true,
+      "category": "Tools & Platforms",
+      "source": "User-confirmed skill"
+    }
+  ]
+}

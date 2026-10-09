@@ -5,6 +5,11 @@
     "typescript": "^5.9.3"
   },
   "scripts": {
-    "resume:convert": "ts-node convertAndNormalize.ts"
+    "resume:convert": "ts-node convertAndNormalize.ts",
+    "resume:tailor": "ts-node tailorAndApply.ts",
+    "resume:propose": "ts-node tailorResume.ts",
+    "resume:skill:confirm": "ts-node registerVerifiedSkill.ts",
+    "resume:apply": "ts-node applyApprovedAdditions.ts",
+    "resume:audit": "ts-node atsAudit.ts"
   }
 }
