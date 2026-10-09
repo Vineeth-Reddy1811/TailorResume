@@ -1,8 +1,16 @@
 {
   "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/multer": "^2.3.0",
     "@types/node": "^20.19.30",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
     "ts-node": "^10.9.2",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vite": "^8.3.4"
   },
   "scripts": {
     "resume:convert": "ts-node convertAndNormalize.ts",
@@ -10,6 +18,19 @@
     "resume:propose": "ts-node tailorResume.ts",
     "resume:skill:confirm": "ts-node registerVerifiedSkill.ts",
     "resume:apply": "ts-node applyApprovedAdditions.ts",
-    "resume:audit": "ts-node atsAudit.ts"
+    "resume:audit": "ts-node atsAudit.ts",
+    "web:dev": "node server/dev.cjs",
+    "web:api": "ts-node --project server/tsconfig.json server/index.ts",
+    "web:ui": "vite --config web/vite.config.mts --host 127.0.0.1",
+    "web:build": "vite build --config web/vite.config.mts",
+    "web:typecheck": "tsc --project web/tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "express": "^5.2.1",
+    "jose": "^6.2.12",
+    "multer": "^2.4.0"
+  },
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
   }
 }

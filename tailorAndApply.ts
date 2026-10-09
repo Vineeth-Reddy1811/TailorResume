@@ -1,5 +1,7 @@
 import * as path from "path";
+import * as fs from "fs";
 import { execFileSync } from "child_process";
+import { persistLearnedSkills } from "./tailorResume";
 
 function usage(): never {
   throw new Error("Usage: npm run resume:tailor -- --resume resume.docx --job-description job.txt --output tailored.docx [--experience-profile profile.json] [--report-dir directory]");
@@ -60,6 +62,13 @@ function main() {
     "--approved-additions", manifest,
     "--output", args.reportDirectory,
   ]);
+  const proposal = JSON.parse(fs.readFileSync(path.join(args.reportDirectory, "tailoring-proposal.json"), "utf8")) as {
+    learnedSkillRecords?: unknown;
+  };
+  if (!Array.isArray(proposal.learnedSkillRecords)) {
+    throw new Error("The tailoring proposal did not contain a valid pending skill-memory update.");
+  }
+  persistLearnedSkills(args.experienceProfile, proposal.learnedSkillRecords as Parameters<typeof persistLearnedSkills>[1]);
   console.log(`Tailored resume: ${args.output}`);
   console.log(`Change record and audit: ${args.reportDirectory}`);
 }

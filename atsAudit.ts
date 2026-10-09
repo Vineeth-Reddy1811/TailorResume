@@ -96,7 +96,13 @@ function paragraphsFromXml(xml: string): Paragraph[] {
 }
 
 function normalize(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  return value.toLowerCase()
+    .replace(/c\+\+/g, " cpp ")
+    .replace(/c#/g, " csharp ")
+    .replace(/f#/g, " fsharp ")
+    .replace(/\.net\b/g, " dotnet ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
 }
 
 function containsPhrase(text: string, phrase: string): boolean {
@@ -127,6 +133,29 @@ function approvedChanges(files: string[], source: string): Change[] {
     changes.push(...manifest.additions);
   }
   return changes;
+}
+
+function pendingLearnedSkills(files: string[]): Requirement[] {
+  const skills = new Map<string, Requirement>();
+  for (const filePath of files) {
+    const manifest = JSON.parse(fs.readFileSync(filePath, "utf8")) as {
+      pendingLearnedSkills?: Array<{ canonical?: unknown; aliases?: unknown; verified?: unknown }>;
+    };
+    for (const skill of manifest.pendingLearnedSkills ?? []) {
+      if (skill.verified !== true || typeof skill.canonical !== "string" || !skill.canonical.trim()) continue;
+      const canonical = skill.canonical.trim();
+      const aliases = Array.isArray(skill.aliases)
+        ? skill.aliases.filter((alias): alias is string => typeof alias === "string" && alias.trim().length > 0).map((alias) => alias.trim())
+        : [];
+      const key = normalize(canonical);
+      const existing = skills.get(key);
+      skills.set(key, {
+        canonical,
+        aliases: [...new Set([...(existing?.aliases ?? []), canonical, ...aliases])],
+      });
+    }
+  }
+  return [...skills.values()];
 }
 
 function userConfirmedRequirements(files: string[]): Set<string> {
@@ -242,6 +271,11 @@ function main() {
   const formatIssues = formatChecks(resumeXml, resumeParagraphs, members);
   const jobDescription = fs.readFileSync(args.jobDescription, "utf8");
   const dictionary = JSON.parse(fs.readFileSync(dictionaryPath, "utf8")) as Requirement[];
+  for (const skill of pendingLearnedSkills(args.approvedAdditions)) {
+    const existing = dictionary.find((item) => normalize(item.canonical) === normalize(skill.canonical));
+    if (existing) existing.aliases = [...new Set([...existing.aliases, ...skill.aliases])];
+    else dictionary.push(skill);
+  }
   for (const profilePath of experienceProfilePaths(args.approvedAdditions)) {
     if (!fs.existsSync(profilePath)) throw new Error(`Experience profile from apply manifest not found: ${profilePath}`);
     const profile = JSON.parse(fs.readFileSync(profilePath, "utf8")) as { verifiedSkills?: Array<{ canonical: string; aliases?: string[]; verified?: boolean }> };
@@ -254,7 +288,7 @@ function main() {
   }
   const evidenceFor = (paragraphs: Paragraph[], requirement: Requirement) => paragraphs.flatMap((paragraph) => {
     const matchedAliases = requirement.aliases.filter((alias) => containsPhrase(paragraph.text, alias));
-    return matchedAliases.length ? [{ paragraphId: paragraph.id, section: paragraph.section, matchedAliases }] : [];
+    return matchedAliases.length ? [{ paragraphId: paragraph.id, section: paragraph.section, matchedAliases, text: paragraph.text }] : [];
   });
   const requirements = dictionary.flatMap((requirement) => {
     const jdAliases = requirement.aliases.filter((alias) => containsPhrase(jobDescription, alias));
@@ -276,7 +310,7 @@ function main() {
       status,
       exactJobTermInTailoredExperience: exactExperience.length > 0,
       sourceEvidence,
-      evidence: evidence.map((item) => ({ paragraphId: item.paragraphId, section: item.section, matchedTerms: item.matchedAliases })),
+      evidence: evidence.map((item) => ({ paragraphId: item.paragraphId, section: item.section, matchedTerms: item.matchedAliases, text: item.text })),
       userConfirmedEvidence: userConfirmed,
       note: status === "partial evidence"
         ? sourceExperience.length

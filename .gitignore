@@ -1,6 +1,15 @@
 # macOS metadata
 .DS_Store
 
+# Dependencies and build output
+/node_modules/
+/web/dist/
+
+# Local environment settings
+.env
+.env.*
+!.env.example
+
 # Personal resume files and extracted resume content
 /Data/input/resume/
 /Data/input/Resume.docx

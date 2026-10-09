@@ -9,5 +9,6 @@
     "skipLibCheck": false,
     "types": ["node"]
   },
-  "include": ["**/*"]
+  "include": ["*.ts", "server/**/*.ts", "shared/**/*.ts"],
+  "exclude": ["node_modules", "web", "web/dist"]
 }
