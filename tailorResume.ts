@@ -775,7 +775,7 @@ async function readCompletedResponse(response: Response, providerLabel = "ChatGP
   let buffer = "";
   let completedResponse: unknown;
   let incompleteResponse: unknown;
-  let streamError: { code?: string; message: string } | undefined;
+  let streamError: { code?: string; message: string; eventType: string; responseId?: string } | undefined;
   const streamedText = new Map<string, string>();
   let sawRefusal = false;
 
@@ -787,6 +787,8 @@ async function readCompletedResponse(response: Response, providerLabel = "ChatGP
       response?: unknown;
       error?: { code?: string; message?: string };
       responseError?: { code?: string; message?: string };
+      code?: string | null;
+      message?: string;
       delta?: unknown;
       text?: unknown;
       output_index?: unknown;
@@ -809,8 +811,16 @@ async function readCompletedResponse(response: Response, providerLabel = "ChatGP
     }
     if (event.type === "response.refusal.delta" || event.type === "response.refusal.done") sawRefusal = true;
     if (event.type === "response.failed" || event.type === "error") {
-      const failure = event.error ?? (event.response as { error?: { code?: string; message?: string } } | undefined)?.error;
-      streamError = { code: failure?.code, message: failure?.message || `${providerLabel} could not complete this request.` };
+      const responseObject = event.response as { id?: unknown; error?: { code?: string; message?: string } } | undefined;
+      const failure = event.error ?? responseObject?.error ?? (event.type === "error"
+        ? { code: event.code ?? undefined, message: event.message }
+        : undefined);
+      streamError = {
+        code: failure?.code ?? undefined,
+        message: failure?.message || `${providerLabel} could not complete this request.`,
+        eventType: event.type,
+        responseId: typeof responseObject?.id === "string" ? responseObject.id : undefined,
+      };
     }
   };
 
@@ -832,7 +842,21 @@ async function readCompletedResponse(response: Response, providerLabel = "ChatGP
   }
   if (streamError) {
     if (providerLabel === "ChatGPT plan") throw new Error(`${providerLabel} request failed: ${streamError.message}`);
-    throw new Error(`${providerLabel} tailoring request failed during streaming. Please retry.`);
+    const safeCode = streamError.code && /^[a-zA-Z0-9_.-]{1,80}$/.test(streamError.code) ? streamError.code : undefined;
+    const requestId = response.headers.get("x-request-id") ?? undefined;
+    console.error("OpenAI API streaming error", JSON.stringify({
+      eventType: streamError.eventType,
+      code: safeCode,
+      responseId: streamError.responseId,
+      requestId,
+    }));
+    if (safeCode === "insufficient_quota" || safeCode === "rate_limit_exceeded") {
+      throw new Error(`OpenAI API rate limited this tailoring request (${safeCode}). Check OpenAI Platform billing and limits, then retry.`);
+    }
+    if (safeCode === "server_error" || safeCode === "internal_error") {
+      throw new Error(`OpenAI API encountered a temporary server error (${safeCode}). Retry the tailoring run.`);
+    }
+    throw new Error(`OpenAI API tailoring request failed during streaming${safeCode ? ` (${safeCode})` : ""}. Check Render logs for the request ID, then retry.`);
   }
   if (incompleteResponse) {
     const details = incompleteResponse as { incomplete_details?: { reason?: unknown } };

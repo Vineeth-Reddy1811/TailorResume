@@ -17,7 +17,7 @@ interface ClaimedRun {
 function publicFailure(error: unknown): string {
   if (error instanceof UserFacingTailoringError) return error.message;
   if (error instanceof Error && /^Claude (?:rate limited|tailoring request failed)/.test(error.message)) return error.message;
-  if (error instanceof Error && /^OpenAI API (?:key was rejected|rate limited|tailoring request failed|did not|returned)/.test(error.message)) return error.message;
+  if (error instanceof Error && /^OpenAI API (?:key was rejected|rate limited|encountered|tailoring request failed|did not|returned)/.test(error.message)) return error.message;
   return "Resume processing could not be completed. Check the saved resume and AI provider connection, then retry.";
 }
 
