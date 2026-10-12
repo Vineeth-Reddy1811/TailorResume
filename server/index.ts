@@ -2,7 +2,7 @@ import express, { type NextFunction, type Request, type Response } from "express
 import multer from "multer";
 import { createHash, randomUUID } from "crypto";
 import { inflateRawSync } from "zlib";
-import { promises as fs } from "fs";
+import { promises as fs, readFileSync } from "fs";
 import * as os from "os";
 import * as path from "path";
 import type { HostedTailoringRunState, TailoringRunResponse } from "../shared/api";
@@ -41,7 +41,6 @@ const runRetentionMs = 60 * 60 * 1000;
 const uploadLimitBytes = 15 * 1024 * 1024;
 const jobDescriptionCharacterLimit = 30_000;
 const jobDescriptionLimitBytes = jobDescriptionCharacterLimit * 4;
-const experienceProfileLimitBytes = 1024 * 1024;
 const allowedOrigins = new Set([
   "http://127.0.0.1:4170",
   "http://localhost:4170",
@@ -150,8 +149,10 @@ function accountUserId(response: Response): string {
   return response.locals.accountUserId as string;
 }
 
-function providerName(value: unknown): "anthropic" | "xai" | null {
-  return value === "anthropic" || value === "xai" ? value : null;
+type HostedProvider = "anthropic" | "xai" | "openai";
+
+function providerName(value: unknown): HostedProvider | null {
+  return value === "anthropic" || value === "xai" || value === "openai" ? value : null;
 }
 
 interface ProviderModelOption {
@@ -165,14 +166,16 @@ class ProviderValidationError extends Error {
   }
 }
 
-async function discoverProviderModels(provider: "anthropic" | "xai", apiKey: string): Promise<ProviderModelOption[]> {
+async function discoverProviderModels(provider: HostedProvider, apiKey: string): Promise<ProviderModelOption[]> {
   // These are provider-owned catalogue endpoints. They validate the submitted
   // key without sending any resume or job-description text.
   // Anthropic: https://platform.claude.com/docs/en/api/models/list
   // xAI: https://docs.x.ai/developers/rest-api-reference/inference/models
   const url = provider === "anthropic"
     ? "https://api.anthropic.com/v1/models?limit=1000&lifecycle=active"
-    : "https://api.x.ai/v1/language-models";
+    : provider === "xai"
+      ? "https://api.x.ai/v1/language-models"
+      : "https://api.openai.com/v1/models";
   const headers: Record<string, string> = provider === "anthropic"
     ? { "x-api-key": apiKey, "anthropic-version": "2023-06-01" }
     : { Authorization: `Bearer ${apiKey}` };
@@ -198,7 +201,7 @@ async function discoverProviderModels(provider: "anthropic" | "xai", apiKey: str
       const structured = capabilities && isRecord(capabilities.structured_outputs) ? capabilities.structured_outputs : null;
       if (structured?.supported === true) models.push({ id: value.id, name: value.display_name });
     }
-  } else {
+  } else if (provider === "xai") {
     if (!Array.isArray(payload.models)) throw new ProviderValidationError("The provider returned an unreadable model list.", 503);
     for (const value of payload.models) {
       if (!isRecord(value) || typeof value.id !== "string") continue;
@@ -207,6 +210,17 @@ async function discoverProviderModels(provider: "anthropic" | "xai", apiKey: str
       if (inputModalities.includes("text") && outputModalities.includes("text")) {
         models.push({ id: value.id, name: value.id });
       }
+    }
+  } else {
+    if (!Array.isArray(payload.data)) throw new ProviderValidationError("The provider returned an unreadable model list.", 503);
+    for (const value of payload.data) {
+      if (!isRecord(value) || typeof value.id !== "string") continue;
+      const id = value.id;
+      // The tailoring request needs a text generation model that supports
+      // Responses structured output; omit known audio, image, embedding, and
+      // moderation-only model families from the selectable list.
+      if (!/^(?:gpt-|o[1-9](?:-|$))/.test(id) || /(?:audio|transcrib|tts|image|embed|moderation|realtime|search|sora)/i.test(id)) continue;
+      models.push({ id, name: id });
     }
   }
   if (models.length === 0) {
@@ -342,13 +356,14 @@ function crc32(buffer: Buffer): number {
   return (crc ^ 0xffffffff) >>> 0;
 }
 
-function isDocxArchive(buffer: Buffer): boolean {
+function extractDocxDocumentXml(buffer: Buffer): string | null {
   const requiredMembers = new Set(["[Content_Types].xml", "_rels/.rels", "word/document.xml"]);
   const maxExpandedBytes = 100 * 1024 * 1024;
   const maxXmlMemberBytes = 20 * 1024 * 1024;
-  if (buffer.length < 22) return false;
+  if (buffer.length < 22) return null;
 
   try {
+    let documentXml: string | null = null;
     let endRecord = -1;
     for (let offset = buffer.length - 22; offset >= Math.max(0, buffer.length - 65_557); offset -= 1) {
       if (buffer.readUInt32LE(offset) === 0x06054b50) {
@@ -359,22 +374,22 @@ function isDocxArchive(buffer: Buffer): boolean {
         }
       }
     }
-    if (endRecord < 0) return false;
+    if (endRecord < 0) return null;
     const diskNumber = buffer.readUInt16LE(endRecord + 4);
     const directoryDisk = buffer.readUInt16LE(endRecord + 6);
     const entriesOnDisk = buffer.readUInt16LE(endRecord + 8);
     const entryCount = buffer.readUInt16LE(endRecord + 10);
     const directorySize = buffer.readUInt32LE(endRecord + 12);
     const directoryOffset = buffer.readUInt32LE(endRecord + 16);
-    if (diskNumber !== 0 || directoryDisk !== 0 || entriesOnDisk !== entryCount || entryCount === 0xffff) return false;
-    if (directorySize === 0xffffffff || directoryOffset === 0xffffffff) return false;
-    if (entryCount > 10_000 || directoryOffset + directorySize > endRecord) return false;
+    if (diskNumber !== 0 || directoryDisk !== 0 || entriesOnDisk !== entryCount || entryCount === 0xffff) return null;
+    if (directorySize === 0xffffffff || directoryOffset === 0xffffffff) return null;
+    if (entryCount > 10_000 || directoryOffset + directorySize > endRecord) return null;
 
     const members = new Map<string, { method: number; flags: number; crc: number; compressedSize: number; expandedSize: number; localOffset: number }>();
     let expandedTotal = 0;
     let cursor = directoryOffset;
     for (let index = 0; index < entryCount; index += 1) {
-      if (cursor + 46 > directoryOffset + directorySize || buffer.readUInt32LE(cursor) !== 0x02014b50) return false;
+      if (cursor + 46 > directoryOffset + directorySize || buffer.readUInt32LE(cursor) !== 0x02014b50) return null;
       const flags = buffer.readUInt16LE(cursor + 8);
       const method = buffer.readUInt16LE(cursor + 10);
       const expectedCrc = buffer.readUInt32LE(cursor + 16);
@@ -386,46 +401,93 @@ function isDocxArchive(buffer: Buffer): boolean {
       const diskStart = buffer.readUInt16LE(cursor + 34);
       const localOffset = buffer.readUInt32LE(cursor + 42);
       const entryEnd = cursor + 46 + nameLength + extraLength + commentLength;
-      if (entryEnd > directoryOffset + directorySize || diskStart !== 0) return false;
-      if ((flags & 1) !== 0 || (method !== 0 && method !== 8)) return false;
-      if (compressedSize === 0xffffffff || expandedSize === 0xffffffff || localOffset === 0xffffffff) return false;
+      if (entryEnd > directoryOffset + directorySize || diskStart !== 0) return null;
+      if ((flags & 1) !== 0 || (method !== 0 && method !== 8)) return null;
+      if (compressedSize === 0xffffffff || expandedSize === 0xffffffff || localOffset === 0xffffffff) return null;
       expandedTotal += expandedSize;
-      if (expandedTotal > maxExpandedBytes) return false;
+      if (expandedTotal > maxExpandedBytes) return null;
       const name = buffer.toString("utf8", cursor + 46, cursor + 46 + nameLength);
       if (requiredMembers.has(name)) {
-        if (members.has(name) || expandedSize > maxXmlMemberBytes) return false;
+        if (members.has(name) || expandedSize > maxXmlMemberBytes) return null;
         members.set(name, { method, flags, crc: expectedCrc, compressedSize, expandedSize, localOffset });
       }
       cursor = entryEnd;
     }
-    if (cursor !== directoryOffset + directorySize || members.size !== requiredMembers.size) return false;
+    if (cursor !== directoryOffset + directorySize || members.size !== requiredMembers.size) return null;
 
     for (const [name, entry] of members) {
-      if (entry.localOffset + 30 > buffer.length || buffer.readUInt32LE(entry.localOffset) !== 0x04034b50) return false;
+      if (entry.localOffset + 30 > buffer.length || buffer.readUInt32LE(entry.localOffset) !== 0x04034b50) return null;
       const localNameLength = buffer.readUInt16LE(entry.localOffset + 26);
       const localExtraLength = buffer.readUInt16LE(entry.localOffset + 28);
-      if (entry.localOffset + 30 + localNameLength + localExtraLength > buffer.length) return false;
+      if (entry.localOffset + 30 + localNameLength + localExtraLength > buffer.length) return null;
       const localName = buffer.toString("utf8", entry.localOffset + 30, entry.localOffset + 30 + localNameLength);
       const localMethod = buffer.readUInt16LE(entry.localOffset + 8);
       const localFlags = buffer.readUInt16LE(entry.localOffset + 6);
-      if (localName !== name || localMethod !== entry.method || localFlags !== entry.flags) return false;
+      if (localName !== name || localMethod !== entry.method || localFlags !== entry.flags) return null;
       const dataStart = entry.localOffset + 30 + localNameLength + localExtraLength;
       const dataEnd = dataStart + entry.compressedSize;
-      if (dataEnd > directoryOffset || dataEnd > buffer.length) return false;
+      if (dataEnd > directoryOffset || dataEnd > buffer.length) return null;
       const compressed = buffer.subarray(dataStart, dataEnd);
       const contents = entry.method === 0
         ? Buffer.from(compressed)
         : inflateRawSync(compressed, { maxOutputLength: maxXmlMemberBytes });
-      if (contents.length !== entry.expandedSize || crc32(contents) !== entry.crc) return false;
+      if (contents.length !== entry.expandedSize || crc32(contents) !== entry.crc) return null;
       const xml = contents.toString("utf8");
-      if (name === "[Content_Types].xml" && !/<(?:\w+:)?Types\b/.test(xml)) return false;
-      if (name === "_rels/.rels" && !/<(?:\w+:)?Relationships\b/.test(xml)) return false;
-      if (name === "word/document.xml" && !/<(?:\w+:)?document\b/.test(xml)) return false;
+      if (name === "[Content_Types].xml" && !/<(?:\w+:)?Types\b/.test(xml)) return null;
+      if (name === "_rels/.rels" && !/<(?:\w+:)?Relationships\b/.test(xml)) return null;
+      if (name === "word/document.xml") {
+        if (!/<(?:\w+:)?document\b/.test(xml)) return null;
+        documentXml = xml;
+      }
     }
-    return true;
+    return documentXml;
   } catch {
-    return false;
+    return null;
   }
+}
+
+function decodeXmlText(value: string): string {
+  return value.replace(/&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos);/gi, (_match, entity: string) => {
+    if (entity.startsWith("#x")) return String.fromCodePoint(Number.parseInt(entity.slice(2), 16));
+    if (entity.startsWith("#")) return String.fromCodePoint(Number.parseInt(entity.slice(1), 10));
+    return ({ amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" } as Record<string, string>)[entity.toLowerCase()] ?? "";
+  });
+}
+
+function resumeTextFromDocumentXml(documentXml: string): string {
+  return [...documentXml.matchAll(/<(?:\w+:)?t\b[^>]*>([\s\S]*?)<\/(?:\w+:)?t>/g)]
+    .map((match) => decodeXmlText(match[1]))
+    .join(" ");
+}
+
+function normalizeSkill(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9+#.]+/g, " ").trim().replace(/\s+/g, " ");
+}
+
+function extractVerifiedSkills(resumeText: string): Array<Record<string, unknown>> {
+  const dictionary = JSON.parse(readFileSync(path.resolve(__dirname, "../config/skill-dictionary.json"), "utf8")) as unknown;
+  if (!Array.isArray(dictionary)) throw new Error("The technical skill dictionary is unavailable.");
+  const normalizedResume = normalizeSkill(resumeText);
+  const found = new Map<string, Record<string, unknown>>();
+  for (const item of dictionary) {
+    if (!isRecord(item) || !isText(item.canonical, 200)) continue;
+    const aliases = [item.canonical, ...(Array.isArray(item.aliases) ? item.aliases.filter((alias): alias is string => typeof alias === "string") : [])];
+    const matched = aliases.some((alias) => {
+      const normalizedAlias = normalizeSkill(alias);
+      return normalizedAlias.length > 1 && ` ${normalizedResume} `.includes(` ${normalizedAlias} `);
+    });
+    if (!matched) continue;
+    const key = normalizeSkill(item.canonical);
+    found.set(key, {
+      canonical: item.canonical,
+      aliases,
+      verified: true,
+      userConfirmed: true,
+      ...(typeof item.category === "string" ? { category: item.category } : {}),
+      source: "Detected in uploaded resume",
+    });
+  }
+  return [...found.values()];
 }
 
 function lookupRun(runId: string | undefined): StoredRun | undefined {
@@ -553,57 +615,25 @@ app.get("/api/account", requireHostedUser, async (_request, response) => {
   const supabase = accountSupabase(response);
   const userId = accountUserId(response);
   try {
-    const [profileResult, experienceResult, resumesResult] = await Promise.all([
+    const [profileResult, resumesResult] = await Promise.all([
       supabase.from("user_profiles").select("display_name").eq("user_id", userId).maybeSingle(),
-      supabase.from("experience_profiles").select("profile_data, updated_at").eq("user_id", userId).maybeSingle(),
       supabase.from("resumes")
         .select("id, display_name, original_file_name, file_size_bytes, sha256, is_default, created_at")
         .eq("user_id", userId)
         .is("deleted_at", null)
         .order("created_at", { ascending: false }),
     ]);
-    if (profileResult.error || experienceResult.error || resumesResult.error) {
+    if (profileResult.error || resumesResult.error) {
       console.error("Could not load hosted account records.");
       response.status(503).json({ error: "Your cloud account data could not be loaded. Please try again." });
       return;
     }
     response.json({
       displayName: profileResult.data?.display_name ?? null,
-      experienceProfile: experienceResult.data?.profile_data ?? { facts: [], verifiedSkills: [] },
-      experienceProfileUpdatedAt: experienceResult.data?.updated_at ?? null,
       resumes: resumesResult.data ?? [],
     });
   } catch {
     response.status(503).json({ error: "Your cloud account data could not be loaded. Please try again." });
-  }
-});
-
-app.put("/api/account/experience-profile", requireHostedUser, requireHostedOrigin, async (request, response) => {
-  const profileData = request.body?.profileData;
-  if (!isRecord(request.body) || Object.keys(request.body).length !== 1 || !isExperienceProfile(profileData)) {
-    response.status(400).json({ error: "Experience profile must be a JSON object with facts and verifiedSkills arrays." });
-    return;
-  }
-  if (Buffer.byteLength(JSON.stringify(profileData), "utf8") > experienceProfileLimitBytes) {
-    response.status(413).json({ error: "Keep the experience profile at or below 1 MB." });
-    return;
-  }
-  const supabase = accountSupabase(response);
-  const userId = accountUserId(response);
-  try {
-    const result = await supabase.from("experience_profiles")
-      .update({ profile_data: profileData })
-      .eq("user_id", userId)
-      .select("profile_data, updated_at")
-      .maybeSingle();
-    if (result.error || !result.data) {
-      console.error("Could not save the hosted experience profile.");
-      response.status(503).json({ error: "Your experience profile could not be saved. Confirm the Supabase migration is applied, then retry." });
-      return;
-    }
-    response.json({ profileData: result.data.profile_data, updatedAt: result.data.updated_at });
-  } catch {
-    response.status(503).json({ error: "Your experience profile could not be saved. Please try again." });
   }
 });
 
@@ -634,8 +664,8 @@ app.post("/api/account/runs", requireHostedUser, requireHostedOrigin, async (req
   const body = request.body;
   const jobDescription = typeof body?.jobDescription === "string" ? body.jobDescription.trim() : "";
   if (!isRecord(body) || Object.keys(body).sort().join(",") !== "aiConsent,jobDescription,provider" ||
-      body.provider !== "anthropic" || body.aiConsent !== true) {
-    response.status(400).json({ error: "Choose Claude and confirm the AI data-sharing notice before starting a run." });
+      (body.provider !== "anthropic" && body.provider !== "openai") || body.aiConsent !== true) {
+    response.status(400).json({ error: "Choose Claude or OpenAI API and confirm the AI data-sharing notice before starting a run." });
     return;
   }
   if (!jobDescription || jobDescription.length > jobDescriptionCharacterLimit) {
@@ -658,7 +688,7 @@ app.post("/api/account/runs", requireHostedUser, requireHostedOrigin, async (req
       admin.from("provider_connections")
         .select("selected_model, credential_ciphertext")
         .eq("user_id", userId)
-        .eq("provider", "anthropic")
+        .eq("provider", body.provider)
         .maybeSingle(),
     ]);
     if (resumeResult.error || !resumeResult.data) {
@@ -666,11 +696,11 @@ app.post("/api/account/runs", requireHostedUser, requireHostedOrigin, async (req
       return;
     }
     if (profileResult.error || !profileResult.data) {
-      response.status(409).json({ error: "Save an experience profile before starting a tailoring run." });
+      response.status(409).json({ error: "Upload or replace your base resume to create its profile before starting a tailoring run." });
       return;
     }
     if (providerResult.error || !providerResult.data?.credential_ciphertext || typeof providerResult.data.selected_model !== "string") {
-      response.status(409).json({ error: "Connect a Claude API key and select a model before starting a tailoring run." });
+      response.status(409).json({ error: `Connect a ${body.provider === "openai" ? "OpenAI API" : "Claude"} key and select a model before starting a tailoring run.` });
       return;
     }
 
@@ -694,7 +724,7 @@ app.post("/api/account/runs", requireHostedUser, requireHostedOrigin, async (req
       p_run_id: runId,
       p_source_resume_id: resumeResult.data.id,
       p_job_description: jobDescription,
-      p_provider: "anthropic",
+      p_provider: body.provider,
       p_model: providerResult.data.selected_model,
     });
     if (saved.error || !isRecord(saved.data)) {
@@ -826,7 +856,7 @@ app.put("/api/account/providers/:provider", requireHostedUser, requireHostedOrig
   const provider = providerName(request.params.provider);
   const credential = request.body?.apiKey;
   if (!provider || !isRecord(request.body) || Object.keys(request.body).length !== 1 || !isText(credential, 500) || credential.length < 20) {
-    response.status(400).json({ error: "Enter a valid Claude or Grok API key." });
+    response.status(400).json({ error: "Enter a valid Claude, Grok, or OpenAI API key." });
     return;
   }
   if (credential.trim() !== credential || /\s/.test(credential)) {
@@ -978,7 +1008,10 @@ app.post("/api/account/resume", requireHostedUser, requireHostedOrigin, requireR
     response.status(400).json({ error: "Choose a DOCX resume to upload." });
     return;
   }
-  if (file.size < 4 || file.buffer[0] !== 0x50 || file.buffer[1] !== 0x4b || !isDocxArchive(file.buffer)) {
+  const documentXml = file.size >= 4 && file.buffer[0] === 0x50 && file.buffer[1] === 0x4b
+    ? extractDocxDocumentXml(file.buffer)
+    : null;
+  if (!documentXml) {
     response.status(400).json({ error: "The uploaded file is not a valid DOCX resume." });
     return;
   }
@@ -993,6 +1026,40 @@ app.post("/api/account/resume", requireHostedUser, requireHostedOrigin, requireR
   const objectKey = `${userId}/${randomUUID()}.docx`;
   const fileArrayBuffer = file.buffer.buffer.slice(file.buffer.byteOffset, file.buffer.byteOffset + file.buffer.byteLength) as ArrayBuffer;
   const sha256 = createHash("sha256").update(file.buffer).digest("hex");
+  let detectedSkills: Array<Record<string, unknown>>;
+  let profileData: Record<string, unknown>;
+  try {
+    const existingProfile = await supabase.from("experience_profiles").select("profile_data").eq("user_id", userId).maybeSingle();
+    if (existingProfile.error || !existingProfile.data || !isExperienceProfile(existingProfile.data.profile_data)) {
+      console.error("Could not load the hosted profile before replacing the resume.");
+      response.status(503).json({ error: "Your resume profile could not be prepared. Please retry." });
+      return;
+    }
+    detectedSkills = extractVerifiedSkills(resumeTextFromDocumentXml(documentXml));
+    const mergedSkills = new Map<string, Record<string, unknown>>();
+    for (const skill of existingProfile.data.profile_data.verifiedSkills as Array<Record<string, unknown>>) {
+      mergedSkills.set(normalizeSkill(String(skill.canonical)), skill);
+    }
+    for (const skill of detectedSkills) {
+      const key = normalizeSkill(String(skill.canonical));
+      const previous = mergedSkills.get(key);
+      const aliases = new Set<string>([
+        ...(Array.isArray(previous?.aliases) ? previous.aliases.filter((alias): alias is string => typeof alias === "string") : []),
+        ...(Array.isArray(skill.aliases) ? skill.aliases.filter((alias): alias is string => typeof alias === "string") : []),
+      ]);
+      mergedSkills.set(key, { ...previous, ...skill, aliases: [...aliases] });
+    }
+    profileData = {
+      sourceResume: originalFileName,
+      sourceSha256: sha256,
+      facts: [],
+      verifiedSkills: [...mergedSkills.values()],
+    };
+  } catch {
+    console.error("Could not extract the hosted resume profile.");
+    response.status(503).json({ error: "The resume could not be analyzed for its experience profile. Please retry." });
+    return;
+  }
   const storage = supabase.storage.from("resume-files");
   let objectUploaded = false;
   let replacementRpcStarted = false;
@@ -1008,6 +1075,7 @@ app.post("/api/account/resume", requireHostedUser, requireHostedOrigin, requireR
         is_default: row.is_default,
         created_at: row.created_at,
       },
+      detectedSkillCount: detectedSkills.length,
       cleanupWarning,
     });
   };
@@ -1032,6 +1100,7 @@ app.post("/api/account/resume", requireHostedUser, requireHostedOrigin, requireR
       p_object_key: objectKey,
       p_file_size_bytes: file.size,
       p_sha256: sha256,
+      p_experience_profile: profileData,
     });
     const replacePayload = isRecord(replaceResult.data) ? replaceResult.data : null;
     let newResume = replacePayload && isRecord(replacePayload.resume) ? replacePayload.resume : null;

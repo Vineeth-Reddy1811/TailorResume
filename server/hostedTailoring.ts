@@ -17,7 +17,8 @@ interface ClaimedRun {
 function publicFailure(error: unknown): string {
   if (error instanceof UserFacingTailoringError) return error.message;
   if (error instanceof Error && /^Claude (?:rate limited|tailoring request failed)/.test(error.message)) return error.message;
-  return "Resume processing could not be completed. Check the saved resume and Claude connection, then retry.";
+  if (error instanceof Error && /^OpenAI API (?:key was rejected|rate limited|tailoring request failed|did not|returned)/.test(error.message)) return error.message;
+  return "Resume processing could not be completed. Check the saved resume and AI provider connection, then retry.";
 }
 
 function mergeLearnedSkills(baseValue: unknown, currentValue: unknown): Record<string, unknown> | null {
@@ -66,9 +67,11 @@ async function processRun(run: ClaimedRun): Promise<void> {
       .maybeSingle();
     const runRow = runResult.data;
     if (runResult.error || !runRow || runRow.status !== "running") return;
-    if (runRow.provider !== "anthropic" || typeof runRow.model !== "string" || !runRow.model || typeof runRow.job_description !== "string") {
-      throw new UserFacingTailoringError("This run is missing a supported Claude provider or model. Update AI provider settings and retry.");
+    if ((runRow.provider !== "anthropic" && runRow.provider !== "openai") || typeof runRow.model !== "string" || !runRow.model || typeof runRow.job_description !== "string") {
+      throw new UserFacingTailoringError("This run is missing a supported AI provider or model. Update AI provider settings and retry.");
     }
+    const provider = runRow.provider;
+    const providerLabel = provider === "openai" ? "OpenAI API" : "Claude";
 
     const [resumeResult, profileResult, credentialResult] = await Promise.all([
       admin.from("resumes")
@@ -84,28 +87,28 @@ async function processRun(run: ClaimedRun): Promise<void> {
       admin.from("provider_connections")
         .select("credential_ciphertext, credential_iv, credential_auth_tag, key_version, selected_model")
         .eq("user_id", run.user_id)
-        .eq("provider", "anthropic")
+        .eq("provider", provider)
         .maybeSingle(),
     ]);
     if (resumeResult.error || !resumeResult.data) throw new UserFacingTailoringError("Your saved base resume is no longer available. Upload it again, then retry.");
-    if (profileResult.error || !profileResult.data?.profile_data) throw new UserFacingTailoringError("Your saved experience profile is unavailable. Save it in account settings, then retry.");
+    if (profileResult.error || !profileResult.data?.profile_data) throw new UserFacingTailoringError("Your resume profile is unavailable. Upload or replace your base resume, then retry.");
     if (credentialResult.error || !credentialResult.data || credentialResult.data.selected_model !== runRow.model) {
-      throw new UserFacingTailoringError("The Claude key or selected model changed before this run started. Retry with your current provider settings.");
+      throw new UserFacingTailoringError(`The ${providerLabel} key or selected model changed before this run started. Retry with your current provider settings.`);
     }
 
-    const credential = decryptProviderCredential(run.user_id, "anthropic", {
+    const credential = decryptProviderCredential(run.user_id, provider, {
       ciphertext: credentialResult.data.credential_ciphertext,
       iv: credentialResult.data.credential_iv,
       authTag: credentialResult.data.credential_auth_tag,
       keyVersion: credentialResult.data.key_version,
     });
     const download = await admin.storage.from(hostedOutputFolder).download(resumeResult.data.object_key);
-    if (download.error || !download.data) throw new UserFacingTailoringError("Your saved base resume could not be opened. Replace it in account settings and retry.");
+    if (download.error || !download.data) throw new UserFacingTailoringError("Your saved base resume could not be opened. Replace it in the resume section and retry.");
     const resumeBytes = Buffer.from(await download.data.arrayBuffer());
     const profileData = profileResult.data.profile_data as Record<string, unknown>;
     const options: TailoringExecutionOptions = {
       experienceProfile: profileData,
-      provider: "anthropic",
+      provider,
       providerApiKey: credential,
       model: runRow.model,
     };
@@ -141,14 +144,14 @@ async function processRun(run: ClaimedRun): Promise<void> {
               .select("user_id")
               .maybeSingle();
             if (savedProfile.error || !savedProfile.data) {
-              tailored.response.warnings.push("Newly detected skills were not saved because your experience profile changed during this run. Save the profile again from account settings.");
+              tailored.response.warnings.push("Newly detected skills were not saved because your resume profile changed during this run. They may be detected again on a later run.");
             }
           }
         } else {
-          tailored.response.warnings.push("Newly detected skills could not be saved to your experience profile. Save the profile again from account settings.");
+          tailored.response.warnings.push("Newly detected skills could not be saved to your account profile. They may be detected again on a later run.");
         }
       } catch {
-        tailored.response.warnings.push("Newly detected skills could not be saved to your experience profile. Save the profile again from account settings.");
+        tailored.response.warnings.push("Newly detected skills could not be saved to your account profile. They may be detected again on a later run.");
       }
     }
 

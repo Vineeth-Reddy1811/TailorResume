@@ -2,8 +2,14 @@ import { useEffect, useState, type ChangeEvent, type FormEvent } from "react";
 import type { AuthenticatedAppUser, HostedAccountResponse, HostedProviderConnection, HostedResumeRecord, HostedTailoringRunState } from "../../shared/api";
 import ReviewPanel from "./ReviewPanel";
 
-const emptyProfile = { facts: [], verifiedSkills: [] };
-const maximumProfileBytes = 1024 * 1024;
+type HostedProvider = HostedProviderConnection["provider"];
+type HostedTailoringProvider = Extract<HostedProvider, "anthropic" | "openai">;
+
+function providerLabel(provider: HostedProvider): string {
+  if (provider === "anthropic") return "Claude";
+  if (provider === "xai") return "Grok";
+  return "OpenAI API";
+}
 
 interface HostedWorkspaceProps {
   user: AuthenticatedAppUser;
@@ -11,12 +17,6 @@ interface HostedWorkspaceProps {
   themeMode: "system" | "light" | "dark";
   onSignOut: () => void;
   onCycleTheme: () => void;
-}
-
-function isProfile(value: unknown): value is Record<string, unknown> & { facts: unknown[]; verifiedSkills: unknown[] } {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const candidate = value as Record<string, unknown>;
-  return Array.isArray(candidate.facts) && Array.isArray(candidate.verifiedSkills);
 }
 
 function messageFrom(payload: unknown, fallback: string): string {
@@ -27,20 +27,18 @@ function messageFrom(payload: unknown, fallback: string): string {
 export default function HostedWorkspace({ user, authBusy, themeMode, onSignOut, onCycleTheme }: HostedWorkspaceProps) {
   const [account, setAccount] = useState<HostedAccountResponse | null>(null);
   const [providerConnections, setProviderConnections] = useState<HostedProviderConnection[]>([]);
-  const [providerModels, setProviderModels] = useState<Record<"anthropic" | "xai", Array<{ id: string; name: string }>>>({ anthropic: [], xai: [] });
-  const [selectedModelDraft, setSelectedModelDraft] = useState<Record<"anthropic" | "xai", string>>({ anthropic: "", xai: "" });
-  const [editingModel, setEditingModel] = useState<"anthropic" | "xai" | null>(null);
-  const [loadingModels, setLoadingModels] = useState<"anthropic" | "xai" | null>(null);
-  const [savingModel, setSavingModel] = useState<"anthropic" | "xai" | null>(null);
-  const [providerKeys, setProviderKeys] = useState<Record<"anthropic" | "xai", string>>({ anthropic: "", xai: "" });
-  const [savingProvider, setSavingProvider] = useState<"anthropic" | "xai" | null>(null);
-  const [profileText, setProfileText] = useState(JSON.stringify(emptyProfile, null, 2));
+  const [providerModels, setProviderModels] = useState<Record<HostedProvider, Array<{ id: string; name: string }>>>({ anthropic: [], xai: [], openai: [] });
+  const [selectedModelDraft, setSelectedModelDraft] = useState<Record<HostedProvider, string>>({ anthropic: "", xai: "", openai: "" });
+  const [editingModel, setEditingModel] = useState<HostedProvider | null>(null);
+  const [loadingModels, setLoadingModels] = useState<HostedProvider | null>(null);
+  const [savingModel, setSavingModel] = useState<HostedProvider | null>(null);
+  const [providerKeys, setProviderKeys] = useState<Record<HostedProvider, string>>({ anthropic: "", xai: "", openai: "" });
+  const [savingProvider, setSavingProvider] = useState<HostedProvider | null>(null);
+  const [tailoringProvider, setTailoringProvider] = useState<HostedTailoringProvider>("anthropic");
   const [loading, setLoading] = useState(true);
-  const [savingProfile, setSavingProfile] = useState(false);
   const [uploadingResume, setUploadingResume] = useState(false);
   const [accountError, setAccountError] = useState("");
   const [accountNotice, setAccountNotice] = useState("");
-  const [profileFileName, setProfileFileName] = useState("");
   const [jobDescription, setJobDescription] = useState("");
   const [aiConsent, setAiConsent] = useState(false);
   const [tailoring, setTailoring] = useState(false);
@@ -50,9 +48,7 @@ export default function HostedWorkspace({ user, authBusy, themeMode, onSignOut, 
     const response = await fetch("/api/account", { cache: "no-store", credentials: "same-origin" });
     const payload = await response.json() as HostedAccountResponse & { error?: string };
     if (!response.ok) throw new Error(messageFrom(payload, "Your cloud account data could not be loaded."));
-    if (!isProfile(payload.experienceProfile)) throw new Error("Supabase returned an invalid experience profile. Check the account migration.");
     setAccount(payload);
-    setProfileText(JSON.stringify(payload.experienceProfile, null, 2));
   }
 
   async function refreshProviders(): Promise<void> {
@@ -68,10 +64,8 @@ export default function HostedWorkspace({ user, authBusy, themeMode, onSignOut, 
       fetch("/api/account", { cache: "no-store", credentials: "same-origin" }).then(async (response) => {
         const payload = await response.json() as HostedAccountResponse & { error?: string };
         if (!response.ok) throw new Error(messageFrom(payload, "Your cloud account data could not be loaded."));
-        if (!isProfile(payload.experienceProfile)) throw new Error("Supabase returned an invalid experience profile.");
         if (!active) return;
         setAccount(payload);
-        setProfileText(JSON.stringify(payload.experienceProfile, null, 2));
       }),
       fetch("/api/account/providers", { cache: "no-store", credentials: "same-origin" }).then(async (response) => {
         const payload = await response.json() as { connections?: HostedProviderConnection[]; error?: string };
@@ -120,68 +114,7 @@ export default function HostedWorkspace({ user, authBusy, themeMode, onSignOut, 
     return () => { active = false; };
   }, []);
 
-  async function loadProfileFile(event: ChangeEvent<HTMLInputElement>): Promise<void> {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    setAccountError("");
-    setAccountNotice("");
-    if (!file) return;
-    if (!file.name.toLowerCase().endsWith(".json") || file.size > maximumProfileBytes) {
-      setAccountError("Choose a JSON experience profile no larger than 1 MB.");
-      return;
-    }
-    try {
-      const text = await file.text();
-      const profile = JSON.parse(text) as unknown;
-      if (!isProfile(profile)) throw new Error("The file must contain facts and verifiedSkills arrays.");
-      setProfileText(JSON.stringify(profile, null, 2));
-      setProfileFileName(file.name);
-      setAccountNotice(`${file.name} loaded. Save the profile to store it in your account.`);
-    } catch (error) {
-      setAccountError(error instanceof Error ? error.message : "The profile file could not be read.");
-    }
-  }
-
-  async function saveProfile(event: FormEvent<HTMLFormElement>): Promise<void> {
-    event.preventDefault();
-    setAccountError("");
-    setAccountNotice("");
-    let profileData: unknown;
-    try {
-      profileData = JSON.parse(profileText);
-    } catch {
-      setAccountError("The experience profile is not valid JSON.");
-      return;
-    }
-    if (!isProfile(profileData)) {
-      setAccountError("The profile must be a JSON object with facts and verifiedSkills arrays.");
-      return;
-    }
-    if (new TextEncoder().encode(profileText).byteLength > maximumProfileBytes) {
-      setAccountError("Keep the experience profile at or below 1 MB of UTF-8 data.");
-      return;
-    }
-    setSavingProfile(true);
-    try {
-      const response = await fetch("/api/account/experience-profile", {
-        method: "PUT",
-        credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ profileData }),
-      });
-      const payload = await response.json() as { error?: string };
-      if (!response.ok) throw new Error(messageFrom(payload, "The experience profile could not be saved."));
-      await refreshAccount();
-      setProfileFileName("");
-      setAccountNotice("Experience profile saved to your account.");
-    } catch (error) {
-      setAccountError(error instanceof Error ? error.message : "The experience profile could not be saved.");
-    } finally {
-      setSavingProfile(false);
-    }
-  }
-
-  async function saveProvider(provider: "anthropic" | "xai", event: FormEvent<HTMLFormElement>): Promise<void> {
+  async function saveProvider(provider: HostedProvider, event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
     const apiKey = providerKeys[provider];
     setAccountError("");
@@ -204,7 +137,7 @@ export default function HostedWorkspace({ user, authBusy, themeMode, onSignOut, 
       setProviderModels((current) => ({ ...current, [provider]: Array.isArray(payload.models) ? payload.models : [] }));
       setSelectedModelDraft((current) => ({ ...current, [provider]: payload.selectedModel ?? "" }));
       await refreshProviders();
-      setAccountNotice(`${provider === "anthropic" ? "Claude" : "Grok"} key verified and saved encrypted to your account.`);
+      setAccountNotice(`${providerLabel(provider)} key verified and saved encrypted to your account.`);
     } catch (error) {
       setAccountError(error instanceof Error ? error.message : "The provider key could not be saved.");
     } finally {
@@ -212,7 +145,7 @@ export default function HostedWorkspace({ user, authBusy, themeMode, onSignOut, 
     }
   }
 
-  async function loadProviderModels(provider: "anthropic" | "xai"): Promise<void> {
+  async function loadProviderModels(provider: HostedProvider): Promise<void> {
     setAccountError("");
     setAccountNotice("");
     setLoadingModels(provider);
@@ -231,7 +164,7 @@ export default function HostedWorkspace({ user, authBusy, themeMode, onSignOut, 
     }
   }
 
-  async function saveProviderModel(provider: "anthropic" | "xai"): Promise<void> {
+  async function saveProviderModel(provider: HostedProvider): Promise<void> {
     const modelId = selectedModelDraft[provider];
     if (!modelId) {
       setAccountError("Choose a model before saving.");
@@ -251,7 +184,7 @@ export default function HostedWorkspace({ user, authBusy, themeMode, onSignOut, 
       if (!response.ok) throw new Error(messageFrom(payload, "The model selection could not be saved."));
       await refreshProviders();
       setEditingModel(null);
-      setAccountNotice(`${provider === "anthropic" ? "Claude" : "Grok"} model selection saved.`);
+      setAccountNotice(`${providerLabel(provider)} model selection saved.`);
     } catch (error) {
       setAccountError(error instanceof Error ? error.message : "The model selection could not be saved.");
     } finally {
@@ -259,8 +192,8 @@ export default function HostedWorkspace({ user, authBusy, themeMode, onSignOut, 
     }
   }
 
-  async function removeProvider(provider: "anthropic" | "xai"): Promise<void> {
-    if (!window.confirm(`Remove the saved ${provider === "anthropic" ? "Claude" : "Grok"} API key?`)) return;
+  async function removeProvider(provider: HostedProvider): Promise<void> {
+    if (!window.confirm(`Remove the saved ${providerLabel(provider)} API key?`)) return;
     setAccountError("");
     setAccountNotice("");
     try {
@@ -278,13 +211,13 @@ export default function HostedWorkspace({ user, authBusy, themeMode, onSignOut, 
     event.preventDefault();
     setAccountError("");
     setAccountNotice("");
-    const provider = providerConnections.find((item) => item.provider === "anthropic" && item.selected_model);
+    const provider = providerConnections.find((item) => item.provider === activeTailoringProvider && item.selected_model);
     if (!currentResume) {
       setAccountError("Save a base resume before tailoring.");
       return;
     }
     if (!provider) {
-      setAccountError("Connect Claude and select a supported model before tailoring.");
+      setAccountError(`Connect ${providerLabel(activeTailoringProvider)} and select a model before tailoring.`);
       return;
     }
     if (!jobDescription.trim() || jobDescription.length > 30_000) {
@@ -301,7 +234,7 @@ export default function HostedWorkspace({ user, authBusy, themeMode, onSignOut, 
         method: "POST",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ jobDescription: jobDescription.trim(), provider: "anthropic", aiConsent: true }),
+        body: JSON.stringify({ jobDescription: jobDescription.trim(), provider: activeTailoringProvider, aiConsent: true }),
       });
       const payload = await response.json() as { run?: HostedTailoringRunState; error?: string };
       if (!response.ok || !payload.run) throw new Error(messageFrom(payload, "The tailoring run could not be started."));
@@ -343,12 +276,12 @@ export default function HostedWorkspace({ user, authBusy, themeMode, onSignOut, 
       const form = new FormData();
       form.append("resume", file);
       const response = await fetch("/api/account/resume", { method: "POST", credentials: "same-origin", body: form });
-      const payload = await response.json() as { error?: string; cleanupWarning?: boolean };
+      const payload = await response.json() as { error?: string; cleanupWarning?: boolean; detectedSkillCount?: number };
       if (!response.ok) throw new Error(messageFrom(payload, "The resume could not be uploaded."));
       await refreshAccount();
       setAccountNotice(payload.cleanupWarning
-        ? "The new base resume is saved. An older resume copy could not be cleaned up yet."
-        : "Your base resume is saved securely to your account.");
+        ? `The new base resume is saved and ${payload.detectedSkillCount ?? 0} recognized skills were added to your profile. An older resume copy could not be cleaned up yet.`
+        : `Your base resume is saved securely. ${payload.detectedSkillCount ?? 0} recognized skills were added to your profile.`);
     } catch (error) {
       setAccountError(error instanceof Error ? error.message : "The resume could not be uploaded.");
     } finally {
@@ -386,6 +319,11 @@ export default function HostedWorkspace({ user, authBusy, themeMode, onSignOut, 
   }
 
   const currentResume = account?.resumes.find((resume) => resume.is_default) ?? null;
+  const availableTailoringProviders = (["anthropic", "openai"] as const).filter((provider) =>
+    providerConnections.some((connection) => connection.provider === provider && Boolean(connection.selected_model)));
+  const activeTailoringProvider = availableTailoringProviders.includes(tailoringProvider)
+    ? tailoringProvider
+    : availableTailoringProviders[0] ?? tailoringProvider;
 
   return (
     <div className="app-shell">
@@ -407,7 +345,7 @@ export default function HostedWorkspace({ user, authBusy, themeMode, onSignOut, 
         <section className="intro" aria-labelledby="hosted-title">
           <p className="eyebrow">RESUME WORKSPACE <span>·</span> HOSTED ACCOUNT</p>
           <h1 id="hosted-title">Your private resume workspace.</h1>
-          <p className="intro-copy">Signed in as {user.displayName || user.email || "your Google account"}. Your resume and experience profile are stored in your account.</p>
+          <p className="intro-copy">Signed in as {user.displayName || user.email || "your Google account"}. Upload your resume once; TailorResume reads its experience and keeps a private skill profile for future tailoring.</p>
         </section>
 
         {accountError && <div className="error-message hosted-feedback" role="alert"><span aria-hidden="true">!</span>{accountError}</div>}
@@ -434,41 +372,19 @@ export default function HostedWorkspace({ user, authBusy, themeMode, onSignOut, 
             {uploadingResume ? "Saving resume…" : currentResume ? "Replace base resume" : "Upload base resume"}
             <input className="visually-hidden" type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" disabled={uploadingResume} onChange={(event) => void uploadResume(event)} />
           </label>
-        </section>
-
-        <section className="hosted-card" aria-labelledby="profile-title">
-          <div className="panel-heading">
-            <div><span className="step-label">02 / EXPERIENCE PROFILE</span><h2 id="profile-title">Your verified experience</h2></div>
-            {profileFileName && <span className="field-meta">Loaded: {profileFileName}</span>}
-          </div>
-          <p className="hosted-help-copy">Import your existing <code>experience-profile.json</code> or edit the JSON below. Keep facts and skills accurate; this becomes the source for future tailored resumes.</p>
-          <div className="hosted-profile-actions">
-            <label className="secondary-button hosted-upload-button">
-              Load profile JSON
-              <input className="visually-hidden" type="file" accept=".json,application/json" onChange={(event) => void loadProfileFile(event)} />
-            </label>
-            {account?.experienceProfileUpdatedAt && <span className="field-meta">Saved {new Date(account.experienceProfileUpdatedAt).toLocaleString()}</span>}
-          </div>
-          <form onSubmit={(event) => void saveProfile(event)}>
-            <label className="visually-hidden" htmlFor="hosted-profile-json">Experience profile JSON</label>
-            <textarea id="hosted-profile-json" className="hosted-profile-editor" value={profileText} maxLength={maximumProfileBytes} spellCheck={false} onChange={(event) => setProfileText(event.target.value)} />
-            <div className="hosted-profile-footer">
-              <span className="field-meta">JSON · up to 1 MB</span>
-              <button className="primary-button" type="submit" disabled={savingProfile || loading}>{savingProfile ? "Saving profile…" : "Save experience profile"}</button>
-            </div>
-          </form>
+          <p className="hosted-help-copy">Recognized skills are extracted from the document and saved automatically. Experience bullets are read from this resume whenever you tailor it.</p>
         </section>
 
         <section className="hosted-card" aria-labelledby="providers-title">
           <div className="panel-heading">
-            <div><span className="step-label">03 / AI PROVIDERS</span><h2 id="providers-title">Your provider keys</h2></div>
+            <div><span className="step-label">02 / AI PROVIDERS</span><h2 id="providers-title">Your provider keys</h2></div>
             <span className="field-meta">Bring your own API key</span>
           </div>
-          <p className="hosted-help-copy">Keys are encrypted by the server before they are saved and are never returned to the browser. Saving a key checks the provider’s model catalogue; it does not send your resume or job description. You can choose which available text model to use when hosted tailoring is enabled.</p>
-          {(["anthropic", "xai"] as const).map((provider) => {
+          <p className="hosted-help-copy">Keys are encrypted by the server before they are saved and are never returned to the browser. Saving a key checks the provider’s model catalogue; it does not send your resume or job description. OpenAI API usage is billed separately from ChatGPT subscriptions. <a href="https://platform.openai.com/api-keys" target="_blank" rel="noreferrer">Manage OpenAI API keys</a>.</p>
+          {(["anthropic", "xai", "openai"] as const).map((provider) => {
             const connection = providerConnections.find((item) => item.provider === provider);
             const connected = Boolean(connection);
-            const label = provider === "anthropic" ? "Claude" : "Grok";
+            const label = providerLabel(provider);
             return (
               <form className="hosted-provider-row" key={provider} onSubmit={(event) => void saveProvider(provider, event)}>
                 <div className="hosted-provider-heading">
@@ -488,7 +404,7 @@ export default function HostedWorkspace({ user, authBusy, themeMode, onSignOut, 
                   maxLength={500}
                 />
                 <div className="hosted-provider-footer">
-                  <span className="field-meta">Provider usage is billed by {provider === "anthropic" ? "Anthropic" : "xAI"}.</span>
+                  <span className="field-meta">Provider usage is billed by {provider === "anthropic" ? "Anthropic" : provider === "xai" ? "xAI" : "OpenAI Platform"}.</span>
                   <button className="secondary-button" type="submit" disabled={savingProvider !== null || providerKeys[provider].length < 20}>{savingProvider === provider ? "Saving…" : connected ? "Replace key" : "Save key"}</button>
                 </div>
                 {connected && <div className="hosted-model-selection">
@@ -514,24 +430,30 @@ export default function HostedWorkspace({ user, authBusy, themeMode, onSignOut, 
 
         <section className="hosted-card" aria-labelledby="hosted-tailor-title">
           <div className="panel-heading">
-            <div><span className="step-label">04 / TAILOR A RESUME</span><h2 id="hosted-tailor-title">Match your resume to a job</h2></div>
-            <span className="field-meta">Claude · saved model</span>
+            <div><span className="step-label">03 / TAILOR A RESUME</span><h2 id="hosted-tailor-title">Match your resume to a job</h2></div>
+            <span className="field-meta">{providerLabel(activeTailoringProvider)} · saved model</span>
           </div>
-          <p className="hosted-help-copy">The full job description and up to 12 relevant experience bullets are sent to Anthropic for analysis. Your DOCX and experience profile stay in TailorResume. Runs and generated files are stored in your account for up to 30 days.</p>
+          <p className="hosted-help-copy">The full job description and up to 12 relevant experience bullets are sent to your selected AI provider. OpenAI API requests use your OpenAI Platform billing and are separate from ChatGPT Plus. Your DOCX and experience profile stay in TailorResume. Runs and generated files are stored in your account for up to 30 days.</p>
           {!currentResume && <p className="hosted-empty-state">Upload a base resume above to begin.</p>}
-          {!providerConnections.some((item) => item.provider === "anthropic" && item.selected_model) && <p className="hosted-empty-state">Connect a Claude API key and select a model above to enable tailoring.</p>}
+          {availableTailoringProviders.length === 0 && <p className="hosted-empty-state">Connect a Claude or OpenAI API key and select a model above to enable tailoring.</p>}
           <form className="hosted-tailoring-form" onSubmit={(event) => void submitHostedRun(event)}>
+            {availableTailoringProviders.length > 0 && <>
+              <label htmlFor="hosted-ai-provider">AI provider</label>
+              <select id="hosted-ai-provider" className="hosted-provider-input" value={activeTailoringProvider} onChange={(event) => { setTailoringProvider(event.target.value as HostedTailoringProvider); setAiConsent(false); }}>
+                {availableTailoringProviders.map((provider) => <option key={provider} value={provider}>{providerLabel(provider)}</option>)}
+              </select>
+            </>}
             <label htmlFor="hosted-job-description">Job description</label>
             <textarea id="hosted-job-description" className="hosted-job-description" value={jobDescription} maxLength={30_000} onChange={(event) => setJobDescription(event.target.value)} placeholder="Paste the full job description" required />
             <span className="field-meta">{jobDescription.length.toLocaleString()} / 30,000 characters · Provider and model are configured above.</span>
             <label className="hosted-consent-row">
               <input type="checkbox" checked={aiConsent} onChange={(event) => setAiConsent(event.target.checked)} />
-              <span>I agree to send the job description and relevant resume experience bullets to Anthropic for this run.</span>
+              <span>I agree to send the job description and relevant resume experience bullets to {providerLabel(activeTailoringProvider)} for this run.</span>
             </label>
-            <button className="primary-button" type="submit" disabled={tailoring || !currentResume || !providerConnections.some((item) => item.provider === "anthropic" && item.selected_model) || !aiConsent || !jobDescription.trim()}>{tailoring ? "Starting…" : "Tailor resume"}</button>
+            <button className="primary-button" type="submit" disabled={tailoring || !currentResume || !providerConnections.some((item) => item.provider === activeTailoringProvider && item.selected_model) || !aiConsent || !jobDescription.trim()}>{tailoring ? "Starting…" : "Tailor resume"}</button>
           </form>
           {hostedRun && <div className="hosted-run-status" role="status" aria-live="polite">
-            <div><strong>{hostedRun.status === "queued" ? "Queued" : hostedRun.status === "running" ? "Preparing your resume…" : hostedRun.status === "succeeded" ? "Resume ready" : hostedRun.status === "failed" ? "Run failed" : hostedRun.status}</strong><span>{new Date(hostedRun.createdAt).toLocaleString()} · {hostedRun.provider ?? "Claude"}{hostedRun.model ? ` · ${hostedRun.model}` : ""}</span></div>
+            <div><strong>{hostedRun.status === "queued" ? "Queued" : hostedRun.status === "running" ? "Preparing your resume…" : hostedRun.status === "succeeded" ? "Resume ready" : hostedRun.status === "failed" ? "Run failed" : hostedRun.status}</strong><span>{new Date(hostedRun.createdAt).toLocaleString()} · {hostedRun.provider === "anthropic" ? "Claude" : hostedRun.provider === "openai" ? "OpenAI API" : hostedRun.provider ?? "AI provider"}{hostedRun.model ? ` · ${hostedRun.model}` : ""}</span></div>
             {(hostedRun.status === "failed" || hostedRun.status === "canceled") && hostedRun.error && <p>{hostedRun.error}</p>}
             {!(["queued", "running"].includes(hostedRun.status)) && <button className="text-button hosted-remove-button" type="button" onClick={() => void deleteHostedRun()}>Delete this run</button>}
           </div>}
@@ -542,7 +464,7 @@ export default function HostedWorkspace({ user, authBusy, themeMode, onSignOut, 
         </section>}
 
         <div className="account-notice hosted-rollout-notice" role="status">
-          Your resumes, profile, provider settings, and tailoring runs belong to this account. Hosted tailoring currently supports Claude; Grok support is planned next. This account does not use the local ChatGPT connection.
+          Your resumes, profile, provider settings, and tailoring runs belong to this account. Hosted tailoring supports Claude and OpenAI API keys. Grok key storage is available, but Grok tailoring is not enabled yet. OpenAI API usage is billed separately from a ChatGPT plan.
         </div>
       </main>
       <footer className="page-footer"><span>TAILORRESUME</span><span>Private hosted workspace</span></footer>

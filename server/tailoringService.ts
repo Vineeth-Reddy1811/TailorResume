@@ -61,7 +61,7 @@ export interface TailoringRunFiles {
 
 export interface TailoringExecutionOptions {
   experienceProfile?: Record<string, unknown>;
-  provider?: "anthropic";
+  provider?: "anthropic" | "openai";
   providerApiKey?: string;
   model?: string;
 }
@@ -146,6 +146,7 @@ function extractCliFailure(logs: string): string | undefined {
 
   const safeError = candidates.find((line) =>
     /^Claude (?:declined|did not|returned|rate limited|tailoring request failed|response)/i.test(line) ||
+    /^OpenAI API (?:key was rejected|rate limited|tailoring request failed|did not|returned)\b/i.test(line) ||
     /^OpenAI (?:did not|returned|proposed|selected)\b/i.test(line) ||
     /^OpenAI declined\b/i.test(line) ||
     /^OpenAI's proposed\b/i.test(line) ||

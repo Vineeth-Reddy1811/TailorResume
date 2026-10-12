@@ -115,13 +115,11 @@ export interface HostedResumeRecord {
 
 export interface HostedAccountResponse {
   displayName: string | null;
-  experienceProfile: Record<string, unknown>;
-  experienceProfileUpdatedAt: string | null;
   resumes: HostedResumeRecord[];
 }
 
 export interface HostedProviderConnection {
-  provider: "anthropic" | "xai";
+  provider: "anthropic" | "xai" | "openai";
   provider_account_label: string | null;
   connected_at: string;
   last_verified_at: string | null;

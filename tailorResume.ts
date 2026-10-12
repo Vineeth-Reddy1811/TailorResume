@@ -768,8 +768,8 @@ function rankExperienceCandidates(
   };
 }
 
-async function readCompletedResponse(response: Response): Promise<unknown> {
-  if (!response.body) throw new Error("ChatGPT did not return a response stream. Please retry.");
+async function readCompletedResponse(response: Response, providerLabel = "ChatGPT plan"): Promise<unknown> {
+  if (!response.body) throw new Error(`${providerLabel} did not return a response stream. Please retry.`);
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -810,7 +810,7 @@ async function readCompletedResponse(response: Response): Promise<unknown> {
     if (event.type === "response.refusal.delta" || event.type === "response.refusal.done") sawRefusal = true;
     if (event.type === "response.failed" || event.type === "error") {
       const failure = event.error ?? (event.response as { error?: { code?: string; message?: string } } | undefined)?.error;
-      streamError = { code: failure?.code, message: failure?.message || "ChatGPT could not complete this request." };
+      streamError = { code: failure?.code, message: failure?.message || `${providerLabel} could not complete this request.` };
     }
   };
 
@@ -827,16 +827,19 @@ async function readCompletedResponse(response: Response): Promise<unknown> {
   } finally {
     reader.releaseLock();
   }
-  if (streamError?.code === "subscription_sharing_usage_limit_exceeded") {
+  if (providerLabel === "ChatGPT plan" && streamError?.code === "subscription_sharing_usage_limit_exceeded") {
     throw new Error("ChatGPT plan request failed with HTTP 429 (subscription_sharing_usage_limit_exceeded). Your ChatGPT plan usage limit for connected apps was reached. Review or adjust TailorResume’s limit in ChatGPT Settings → Usage. No API-key billing fallback was used.");
   }
-  if (streamError) throw new Error(`ChatGPT plan request failed: ${streamError.message}`);
+  if (streamError) {
+    if (providerLabel === "ChatGPT plan") throw new Error(`${providerLabel} request failed: ${streamError.message}`);
+    throw new Error(`${providerLabel} tailoring request failed during streaming. Please retry.`);
+  }
   if (incompleteResponse) {
     const details = incompleteResponse as { incomplete_details?: { reason?: unknown } };
     const reason = typeof details.incomplete_details?.reason === "string" ? details.incomplete_details.reason : "unknown";
     throw new Error(`OpenAI did not complete the structured job skill response (reason: ${reason}). Please shorten the job description or retry.`);
   }
-  if (!completedResponse) throw new Error("ChatGPT did not complete the response stream. Please retry.");
+  if (!completedResponse) throw new Error(`${providerLabel} did not complete the response stream. Please retry.`);
   const collectedText = [...streamedText.entries()]
     .sort(([left], [right]) => left.localeCompare(right, undefined, { numeric: true }))
     .map(([, value]) => value)
@@ -1027,6 +1030,36 @@ async function analyzeJobWithOpenAI(
     if (!text) throw new Error("Claude did not return structured job skill results. Please retry.");
     responsePayload = { output_text: text, status: "completed" };
     console.info(`[Claude usage] model=${model} input=${payload.usage?.input_tokens ?? "unknown"} output=${payload.usage?.output_tokens ?? "unknown"}`);
+  } else if (provider === "openai") {
+    const apiKey = process.env.TAILORRESUME_AI_API_KEY?.trim();
+    model = process.env.TAILORRESUME_AI_MODEL?.trim() ?? "";
+    if (!apiKey || !model) throw new Error("The saved OpenAI API connection or model is unavailable. Reconnect OpenAI API and try again.");
+    const response = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(90_000),
+      body: JSON.stringify({
+        model,
+        reasoning: { effort: "low" },
+        store: false,
+        stream: true,
+        instructions,
+        input: [{ role: "user", content: userInput }],
+        text: { format: { type: "json_schema", name: "job_skill_extraction_and_experience_drafts", strict: true, schema } },
+      }),
+    });
+    if (!response.ok) {
+      const errorPayload = await response.json().catch(() => null) as { error?: { code?: unknown; type?: unknown } } | null;
+      const code = typeof errorPayload?.error?.code === "string" ? errorPayload.error.code
+        : typeof errorPayload?.error?.type === "string" ? errorPayload.error.type : undefined;
+      if (response.status === 401 || response.status === 403) throw new Error("The saved OpenAI API key was rejected. Replace it in AI provider settings.");
+      if (response.status === 429) throw new Error("OpenAI API rate limited this tailoring request or its project has insufficient quota. Check OpenAI Platform billing and limits, then retry.");
+      throw new Error(`OpenAI API tailoring request failed with HTTP ${response.status}${code ? ` (${code})` : ""}. Check the selected model and OpenAI Platform project access, then retry.`);
+    }
+    responsePayload = await readCompletedResponse(response, "OpenAI API") as typeof responsePayload;
+    if (responsePayload.usage) {
+      console.info(`[OpenAI API usage] model=${model} input=${responsePayload.usage.input_tokens ?? "unknown"} cached_input=${responsePayload.usage.input_tokens_details?.cached_tokens ?? "unknown"} output=${responsePayload.usage.output_tokens ?? "unknown"}`);
+    }
   } else if (provider === "chatgpt") {
     const accessToken = process.env.OPENAI_ACCESS_TOKEN?.trim();
     if (!accessToken) throw new Error("ChatGPT plan access token is missing. Connect ChatGPT in the TailorResume web app and allow plan usage.");
