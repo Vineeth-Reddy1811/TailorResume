@@ -26,6 +26,8 @@
     "web:typecheck": "tsc --project web/tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@supabase/ssr": "^0.12.7",
+    "@supabase/supabase-js": "^2.117.3",
     "express": "^5.2.1",
     "jose": "^6.2.12",
     "multer": "^2.4.0"

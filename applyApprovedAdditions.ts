@@ -13,6 +13,7 @@ type ApprovedChange = {
   text: string;
   source?: string;
   pageBreakBefore?: boolean;
+  boldLabel?: boolean;
   supersedes?: string;
   userConfirmed?: boolean;
 };
@@ -104,7 +105,8 @@ function copyParagraphFormatting(anchorXml: string, text: string, pageBreakBefor
   const boldRun = textRuns.find((run) => /<w:b(?:\s|\/|>)/.test(run));
   const regularRun = textRuns.find((run) => !/<w:b(?:\s|\/|>)/.test(run));
   const regularProperties = runProperties(regularRun ?? textRuns[0]);
-  const colonIndex = text.indexOf(":");
+  const colonIndexes = [text.indexOf(":"), text.indexOf("：")].filter((index) => index >= 0);
+  const colonIndex = colonIndexes.length ? Math.min(...colonIndexes) : -1;
   if (boldLabel && colonIndex > 0) {
     const labelProperties = withBold(runProperties(boldRun) || regularProperties);
     const label = text.slice(0, colonIndex + 1);
@@ -155,6 +157,7 @@ function loadApprovedAdditions(filePath: string): ApprovedAdditionsFile {
       text: addition.text.trim(),
       source: typeof addition.source === "string" ? addition.source : undefined,
       pageBreakBefore: addition.pageBreakBefore === true,
+      boldLabel: addition.boldLabel === true,
       supersedes: typeof addition.supersedes === "string" ? addition.supersedes : undefined,
       userConfirmed: addition.userConfirmed === true,
     };
@@ -213,7 +216,7 @@ function patchDocumentXml(documentXml: string, additions: ApprovedChange[], styl
     const additionsAtAnchor = additionsByParagraph.get(index);
     const match = paragraphMatches[index];
     const end = (match.index ?? 0) + match[0].length;
-    const replacementXml = replacement ? copyParagraphFormatting(match[0], replacement.text, replacement.pageBreakBefore) : match[0];
+    const replacementXml = replacement ? copyParagraphFormatting(match[0], replacement.text, replacement.pageBreakBefore, replacement.boldLabel) : match[0];
     const insertion = additionsAtAnchor?.length
       ? additionsAtAnchor.map((addition) => copyParagraphFormatting(match[0], addition.text, false, addition.operation === "add-paragraph")).join("")
       : "";

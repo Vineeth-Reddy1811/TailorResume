@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ChangeEvent, type DragEvent, type FormEvent } from "react";
-import type { ApiError, TailoringRunResponse } from "../../shared/api";
+import type { ApiError, AppSessionResponse, AuthenticatedAppUser, TailoringRunResponse } from "../../shared/api";
+import HostedWorkspace from "./HostedWorkspace";
 import ReviewPanel from "./ReviewPanel";
 import { clearLocalDraft, loadLocalDraft, localSessionRetentionMs, saveLocalDraft, subscribeToLocalDraftClear } from "./localSession";
 
@@ -7,6 +8,7 @@ const maxResumeSize = 15 * 1024 * 1024;
 const maxJobDescriptionLength = 30_000;
 const localSessionRetentionDays = localSessionRetentionMs / (24 * 60 * 60 * 1000);
 type ThemeMode = "system" | "light" | "dark";
+type AppMode = "loading" | "local" | "hosted" | "unavailable";
 
 function savedTheme(): ThemeMode {
   try {
@@ -18,6 +20,10 @@ function savedTheme(): ThemeMode {
 }
 
 export default function App() {
+  const [appMode, setAppMode] = useState<AppMode>("loading");
+  const [hostedUser, setHostedUser] = useState<AuthenticatedAppUser | null>(null);
+  const [authError, setAuthError] = useState("");
+  const [authBusy, setAuthBusy] = useState(false);
   const [themeMode, setThemeMode] = useState<ThemeMode>(savedTheme);
   const [resume, setResume] = useState<File | null>(null);
   const [jobDescription, setJobDescription] = useState("");
@@ -67,34 +73,55 @@ export default function App() {
 
   useEffect(() => {
     let active = true;
-    const version = draftSaveVersion.current;
-    loadLocalDraft().then((draft) => {
-      if (!active || version !== draftSaveVersion.current) return;
-      restoredDraft.current = draft;
-      currentDraft.current = draft;
-      draftEdited.current = false;
-      setResume(draft.resume);
-      setJobDescription(draft.jobDescription);
-      hasDraft.current = Boolean(draft.resume || draft.jobDescription);
-      setDraftStorageReady(true);
-      setDraftStatus(draft.resume || draft.jobDescription ? "saved" : "empty");
-      setDraftLoaded(true);
-    }).catch(() => {
-      if (!active || version !== draftSaveVersion.current) return;
-      setDraftStatus("restore-error");
-      setDraftLoaded(true);
-    });
+    const restoreLocalDraft = async () => {
+      const version = draftSaveVersion.current;
+      try {
+        const response = await fetch("/api/auth/session", { cache: "no-store" });
+        const session = await response.json() as AppSessionResponse;
+        if ((!response.ok && response.status !== 401) || (session.mode !== "local" && session.mode !== "hosted")) {
+          throw new Error(session.error || "Could not verify the TailorResume session.");
+        }
+        if (!active) return;
+        setAppMode(session.mode);
+        if (session.mode === "hosted") {
+          setHostedUser(session.authenticated && session.user ? session.user : null);
+          setDraftLoaded(true);
+          const authResult = new URLSearchParams(window.location.search).get("auth");
+          if (authResult === "failed") setAuthError("Google sign-in could not be completed. Please try again.");
+          if (authResult) window.history.replaceState({}, "", `${window.location.pathname}${window.location.hash}`);
+          return;
+        }
+
+        const draft = await loadLocalDraft();
+        if (!active || version !== draftSaveVersion.current) return;
+        restoredDraft.current = draft;
+        currentDraft.current = draft;
+        draftEdited.current = false;
+        setResume(draft.resume);
+        setJobDescription(draft.jobDescription);
+        hasDraft.current = Boolean(draft.resume || draft.jobDescription);
+        setDraftStorageReady(true);
+        setDraftStatus(draft.resume || draft.jobDescription ? "saved" : "empty");
+        setDraftLoaded(true);
+      } catch {
+        if (!active || version !== draftSaveVersion.current) return;
+        setAppMode("unavailable");
+        setAuthError("TailorResume could not verify your session. Refresh the page and try again.");
+      }
+    };
+    void restoreLocalDraft();
     return () => { active = false; };
   }, []);
 
   useEffect(() => {
+    if (appMode !== "local") return;
     const message = new URLSearchParams(window.location.search).get("chatgpt");
     if (message === "connected") setChatGPTNotice("ChatGPT is connected and plan usage is enabled.");
     if (message === "permission") setChatGPTNotice("ChatGPT plan usage permission was not granted. Reconnect and allow plan usage to tailor resumes.");
     if (message === "failed") setChatGPTNotice("ChatGPT connection could not be completed. Please try again.");
     if (message) window.history.replaceState({}, "", `${window.location.pathname}${window.location.hash}`);
     void refreshChatGPTStatus();
-  }, []);
+  }, [appMode]);
 
   async function refreshChatGPTStatus() {
     try {
@@ -140,7 +167,9 @@ export default function App() {
     }
   }
 
-  useEffect(() => subscribeToLocalDraftClear(() => {
+  useEffect(() => {
+    if (appMode !== "local") return undefined;
+    return subscribeToLocalDraftClear(() => {
     if (draftSaveTimer.current !== null) window.clearTimeout(draftSaveTimer.current);
     draftSaveTimer.current = null;
     draftSaveVersion.current += 1;
@@ -155,7 +184,8 @@ export default function App() {
     setDraftStatus("empty");
     setSessionWarning("");
     if (fileInput.current) fileInput.current.value = "";
-  }), []);
+    });
+  }, [appMode]);
 
   useEffect(() => {
     if (!draftLoaded || (!draftStorageReady && !resume && !jobDescription) || (!resume && !jobDescription && !hasDraft.current && !draftEdited.current && pendingLocalSaves.current === 0)) return;
@@ -204,6 +234,25 @@ export default function App() {
 
   function cycleTheme() {
     setThemeMode((current) => current === "system" ? "light" : current === "light" ? "dark" : "system");
+  }
+
+  function beginGoogleSignIn() {
+    setAuthBusy(true);
+    window.location.assign("/auth/google/start");
+  }
+
+  async function signOutHostedUser() {
+    setAuthBusy(true);
+    setAuthError("");
+    try {
+      const response = await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" });
+      if (!response.ok) throw new Error("Could not sign out. Please retry.");
+      setHostedUser(null);
+    } catch (requestError) {
+      setAuthError(requestError instanceof Error ? requestError.message : "Could not sign out. Please retry.");
+    } finally {
+      setAuthBusy(false);
+    }
   }
 
   function acceptResume(file: File | undefined) {
@@ -331,6 +380,60 @@ export default function App() {
     : draftStatus === "save-error" ? "Could not save local session"
     : `Draft autosaves · ${localSessionRetentionDays}-day retention`;
 
+  if (appMode === "loading") {
+    return <div className="app-shell auth-loading" role="status">Loading TailorResume…</div>;
+  }
+
+  if (appMode === "unavailable") {
+    return (
+      <div className="app-shell">
+        <main className="main-content">
+          <section className="account-gate" aria-labelledby="session-error-title">
+            <p className="eyebrow">TAILORRESUME</p>
+            <h1 id="session-error-title">Session check failed</h1>
+            <p className="intro-copy">{authError}</p>
+            <button className="primary-button" type="button" onClick={() => window.location.reload()}>Try again</button>
+          </section>
+        </main>
+      </div>
+    );
+  }
+
+  if (appMode === "hosted") {
+    if (hostedUser) {
+      return <HostedWorkspace user={hostedUser} authBusy={authBusy} themeMode={themeMode} onSignOut={() => void signOutHostedUser()} onCycleTheme={cycleTheme} />;
+    }
+    return (
+      <div className="app-shell">
+        <header className="topbar">
+          <a className="brand" href="#top" aria-label="TailorResume home">
+            <span className="brand-mark" aria-hidden="true">T</span>
+            <span>tailor<span className="brand-light">resume</span></span>
+          </a>
+          <div className="topbar-actions">
+            <button className="theme-toggle" type="button" onClick={cycleTheme} aria-label={`Theme setting: ${themeMode}. Activate to change theme`} title="Cycles between system, light, and dark themes">
+              <span aria-hidden="true">{themeMode === "dark" ? "☾" : themeMode === "light" ? "☀" : "◐"}</span>
+              <span>{themeMode === "system" ? "System" : themeMode === "light" ? "Light" : "Dark"}</span>
+            </button>
+            {hostedUser && <button className="secondary-button" type="button" onClick={signOutHostedUser} disabled={authBusy}>{authBusy ? "Signing out…" : "Sign out"}</button>}
+          </div>
+        </header>
+        <main id="top" className="main-content">
+          <section className="account-gate" aria-labelledby="account-title">
+            <p className="eyebrow">RESUME WORKSPACE <span>·</span> HOSTED ACCOUNT</p>
+            <h1 id="account-title">Sign in to TailorResume.</h1>
+            <p className="intro-copy">Use your Google account to create your TailorResume account.</p>
+            <button className="primary-button" type="button" onClick={beginGoogleSignIn} disabled={authBusy}>
+              {authBusy ? "Opening Google…" : "Continue with Google"}
+            </button>
+            {authError && <div className="error-message" role="alert"><span aria-hidden="true">!</span>{authError}</div>}
+          </section>
+        </main>
+        <footer className="page-footer"><span>TAILORRESUME</span><span>Hosted account foundation</span></footer>
+      </div>
+    );
+  }
+
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -452,7 +555,7 @@ export default function App() {
                 <h1 id="results-title">Review your tailored draft.</h1>
                 <p className="intro-copy">Every change is recorded below. Your source resume remains untouched.</p>
               </div>
-              <button className="secondary-button" type="button" onClick={startNewRun}>Edit saved inputs</button>
+              <button className="secondary-button" type="button" onClick={startNewRun}><span aria-hidden="true">←</span> Go back</button>
             </div>
             {sessionWarning && <div className="error-message session-warning" role="status"><span aria-hidden="true">!</span>{sessionWarning}</div>}
             <ReviewPanel result={result} />

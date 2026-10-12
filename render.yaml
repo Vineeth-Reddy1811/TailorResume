@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: tailorresume
+    runtime: node
+    plan: free
+    buildCommand: npm ci && npm run web:build
+    startCommand: npm run web:api
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: APP_MODE
+        value: hosted
+      - key: HOST
+        value: 0.0.0.0
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_PUBLISHABLE_KEY
+        sync: false
+      - key: SUPABASE_SECRET_KEY
+        sync: false
+      - key: PUBLIC_APP_URL
+        sync: false
+      - key: AI_CREDENTIAL_ENCRYPTION_KEY
+        sync: false

@@ -7,9 +7,11 @@ import { promisify } from "util";
 import type {
   AuditRequirement,
   RequirementSummary,
+  ResumePreviewLine,
   TailoringChange,
   TailoringRunResponse,
 } from "../shared/api";
+import { isBulletParagraph } from "../docxStructure";
 import { getChatGPTAccessToken } from "./chatgptAuth";
 
 const execFileAsync = promisify(execFile);
@@ -53,13 +55,82 @@ export interface TailoringRunFiles {
   runId: string;
   directory: string;
   resumePath: string;
-  reportPath: string;
   downloadName: string;
   response: TailoringRunResponse;
 }
 
+export interface TailoringExecutionOptions {
+  experienceProfile?: Record<string, unknown>;
+  provider?: "anthropic";
+  providerApiKey?: string;
+  model?: string;
+}
+
 function countStatus(requirements: AuditRequirement[], status: string): number {
   return requirements.filter((requirement) => requirement.status === status).length;
+}
+
+function decodeXml(value: string): string {
+  return value
+    .replace(/&#x([0-9a-f]+);/gi, (_match, hex: string) => String.fromCodePoint(parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (_match, number: string) => String.fromCodePoint(Number(number)))
+    .replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, "&");
+}
+
+function paragraphIndex(paragraphId: string | undefined): number | undefined {
+  const match = paragraphId?.match(/^p-(\d{4})$/);
+  return match ? Number(match[1]) - 1 : undefined;
+}
+
+async function readResumePreview(resumePath: string, changes: TailoringChange[]): Promise<ResumePreviewLine[]> {
+  const [document, styles] = await Promise.all([
+    execFileAsync("unzip", ["-p", resumePath, "word/document.xml"], { encoding: "utf8", maxBuffer: 25 * 1024 * 1024 }),
+    execFileAsync("unzip", ["-p", resumePath, "word/styles.xml"], { encoding: "utf8", maxBuffer: 5 * 1024 * 1024 }).catch(() => ({ stdout: "", stderr: "" })),
+  ]);
+  const documentXml = document.stdout;
+  const insertions = changes.flatMap((change) => {
+    if (change.action !== "add") return [];
+    const anchor = paragraphIndex(change.afterParagraphId);
+    return anchor === undefined ? [] : [{ anchor }];
+  });
+  const insertionsBefore = (index: number) => insertions.filter((item) => item.anchor < index).length;
+  const changedParagraphs = new Set<number>();
+  changes.forEach((change) => {
+    if (change.action !== "rewrite") return;
+    const sourceIndex = paragraphIndex(change.sourceParagraphId);
+    if (sourceIndex !== undefined) changedParagraphs.add(sourceIndex + insertionsBefore(sourceIndex));
+  });
+  insertions.forEach(({ anchor }, insertionIndex) => {
+    const earlierAtAnchor = insertions.slice(0, insertionIndex).filter((item) => item.anchor === anchor).length;
+    changedParagraphs.add(anchor + insertionsBefore(anchor) + earlierAtAnchor + 1);
+  });
+  const sectionHeadings: Record<string, string> = {
+    SUMMARY: "Summary",
+    EXPERIENCE: "Experience",
+    "PROFESSIONAL EXPERIENCE": "Experience",
+    SKILLS: "Skills",
+    "TECHNICAL SKILLS": "Skills",
+    "TECHNICAL KNOWLEDGE": "Skills",
+    PROJECTS: "Projects",
+    EDUCATION: "Education",
+    CERTIFICATIONS: "Certifications",
+  };
+  let section = "Header";
+  const paragraphs = documentXml.match(/<w:p\b[\s\S]*?<\/w:p>/g) ?? [];
+  return paragraphs.flatMap((paragraphXml, paragraphIndex): ResumePreviewLine[] => {
+    const text = [...paragraphXml.matchAll(/<w:t\b[^>]*>([\s\S]*?)<\/w:t>|<w:tab\s*\/>|<w:br\s*\/>/g)]
+      .map((match) => match[1] === undefined ? " " : decodeXml(match[1]))
+      .join("").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
+    if (!text) return [];
+    const heading = sectionHeadings[text.replace(/[:：]+$/, "").trim().toUpperCase()];
+    if (heading) {
+      section = heading;
+      return [{ text, section, kind: "section-heading", changed: false }];
+    }
+    const isBullet = isBulletParagraph(paragraphXml, styles.stdout);
+    return [{ text, section, kind: isBullet ? "bullet" : "paragraph", changed: changedParagraphs.has(paragraphIndex) }];
+  });
 }
 
 function extractCliFailure(logs: string): string | undefined {
@@ -74,6 +145,7 @@ function extractCliFailure(logs: string): string | undefined {
   if (profileLockFailure) return "Could not update the saved skill profile because an update lock is present. Resolve the existing profile update before retrying.";
 
   const safeError = candidates.find((line) =>
+    /^Claude (?:declined|did not|returned|rate limited|tailoring request failed|response)/i.test(line) ||
     /^OpenAI (?:did not|returned|proposed|selected)\b/i.test(line) ||
     /^OpenAI declined\b/i.test(line) ||
     /^OpenAI's proposed\b/i.test(line) ||
@@ -88,18 +160,21 @@ export async function createTailoringRun(
   resumeBytes: Buffer,
   originalFileName: string,
   jobDescription: string,
+  options: TailoringExecutionOptions = {},
 ): Promise<TailoringRunFiles> {
-  let chatGPTAccessToken: string;
-  try {
-    chatGPTAccessToken = await getChatGPTAccessToken();
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "";
-    if (/^(?:Connect ChatGPT|ChatGPT plan authorization|ChatGPT plan permission)/.test(message)) {
-      throw new UserFacingTailoringError(message);
+  let chatGPTAccessToken: string | undefined;
+  if (!options.provider) {
+    try {
+      chatGPTAccessToken = await getChatGPTAccessToken();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      if (/^(?:Connect ChatGPT|ChatGPT plan authorization|ChatGPT plan permission)/.test(message)) {
+        throw new UserFacingTailoringError(message);
+      }
+      throw error;
     }
-    throw error;
   }
-  if (!(await fs.stat(profilePath).catch(() => null))) {
+  if (!options.experienceProfile && !(await fs.stat(profilePath).catch(() => null))) {
     throw new UserFacingTailoringError("The local experience profile is missing. Set it up from the example profile first.");
   }
 
@@ -109,11 +184,18 @@ export async function createTailoringRun(
   const jobDescriptionPath = path.join(directory, "job-description.txt");
   const outputPath = path.join(directory, "tailored-resume.docx");
   const reportPath = path.join(directory, "report");
+  const runProfilePath = options.experienceProfile ? path.join(directory, "experience-profile.json") : profilePath;
 
   try {
     await fs.writeFile(path.join(directory, runOwnershipMarker), runOwnershipMarkerText, { flag: "wx", mode: 0o600 });
     await fs.writeFile(inputPath, resumeBytes, { flag: "wx", mode: 0o600 });
     await fs.writeFile(jobDescriptionPath, jobDescription, { flag: "wx", mode: 0o600 });
+    if (options.experienceProfile) {
+      await fs.writeFile(runProfilePath, `${JSON.stringify(options.experienceProfile, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+    }
+    if (options.provider && (!options.providerApiKey || !options.model)) {
+      throw new UserFacingTailoringError("The selected AI provider connection is incomplete. Update its key and model in account settings.");
+    }
 
     let processOutput = "";
     let processError = "";
@@ -124,13 +206,20 @@ export async function createTailoringRun(
           "run", "resume:tailor", "--",
           "--resume", inputPath,
           "--job-description", jobDescriptionPath,
-          "--experience-profile", profilePath,
+          "--experience-profile", runProfilePath,
           "--output", outputPath,
           "--report-dir", reportPath,
         ],
         {
           cwd: projectRoot,
-          env: { ...process.env, OPENAI_API_KEY: undefined, OPENAI_ACCESS_TOKEN: chatGPTAccessToken },
+          env: {
+            ...process.env,
+            OPENAI_API_KEY: undefined,
+            OPENAI_ACCESS_TOKEN: options.provider ? undefined : chatGPTAccessToken,
+            TAILORRESUME_AI_PROVIDER: options.provider ?? "chatgpt",
+            TAILORRESUME_AI_API_KEY: options.providerApiKey,
+            TAILORRESUME_AI_MODEL: options.model,
+          },
           timeout: maxProcessingTimeMs,
           maxBuffer: 5 * 1024 * 1024,
           encoding: "utf8",
@@ -173,14 +262,8 @@ export async function createTailoringRun(
       fs.readFile(proposalPath, "utf8").then((text) => JSON.parse(text) as ProposalReport),
       fs.readFile(auditPath, "utf8").then((text) => JSON.parse(text) as AuditReport),
     ]);
-    const [proposalMarkdown, auditMarkdown] = await Promise.all([
-      fs.readFile(path.join(reportPath, "tailoring-proposal.md"), "utf8"),
-      fs.readFile(path.join(reportPath, "ats-audit.md"), "utf8"),
-    ]);
-    const combinedReportPath = path.join(directory, "tailoring-report.md");
-    await fs.writeFile(combinedReportPath, `${proposalMarkdown}\n\n---\n\n${auditMarkdown}`, { mode: 0o600 });
-
     const issueCount = audit.preservationIssues.length + audit.formatIssues.length;
+    const preview = await readResumePreview(outputPath, proposal.changes);
     const response: TailoringRunResponse = {
       runId,
       originalFileName: path.basename(originalFileName),
@@ -206,9 +289,9 @@ export async function createTailoringRun(
         formatIssues: audit.formatIssues,
       },
       warnings: [...(proposal.analysisWarnings ?? []), ...audit.preservationIssues, ...audit.formatIssues],
+      preview,
       downloads: {
         resume: `/api/runs/${runId}/resume`,
-        report: `/api/runs/${runId}/report`,
       },
     };
 
@@ -216,7 +299,6 @@ export async function createTailoringRun(
       runId,
       directory,
       resumePath: outputPath,
-      reportPath: combinedReportPath,
       downloadName: `${path.parse(originalFileName).name}-tailored.docx`,
       response,
     };

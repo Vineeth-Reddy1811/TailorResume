@@ -22,6 +22,7 @@ export interface TailoringChange {
   role: string | null;
   originalText?: string;
   proposedText: string;
+  supportingQuote?: string;
   requirements: string[];
   userConfirmed: boolean;
   source: string;
@@ -45,6 +46,13 @@ export interface AuditRequirement {
     matchedAliases: string[];
     text: string;
   }>;
+}
+
+export interface ResumePreviewLine {
+  text: string;
+  section: string;
+  kind: "section-heading" | "bullet" | "paragraph";
+  changed: boolean;
 }
 
 export interface TailoringRunResponse {
@@ -72,12 +80,62 @@ export interface TailoringRunResponse {
     formatIssues: string[];
   };
   warnings: string[];
+  preview: ResumePreviewLine[];
   downloads: {
     resume: string;
-    report: string;
   };
 }
 
 export interface ApiError {
   error: string;
+}
+
+export interface AuthenticatedAppUser {
+  id: string;
+  email: string | null;
+  displayName: string | null;
+}
+
+export interface AppSessionResponse {
+  mode: "local" | "hosted";
+  authenticated: boolean;
+  user: AuthenticatedAppUser | null;
+  error?: string;
+}
+
+export interface HostedResumeRecord {
+  id: string;
+  display_name: string;
+  original_file_name: string;
+  file_size_bytes: number | string;
+  sha256: string;
+  is_default: boolean;
+  created_at: string;
+}
+
+export interface HostedAccountResponse {
+  displayName: string | null;
+  experienceProfile: Record<string, unknown>;
+  experienceProfileUpdatedAt: string | null;
+  resumes: HostedResumeRecord[];
+}
+
+export interface HostedProviderConnection {
+  provider: "anthropic" | "xai";
+  provider_account_label: string | null;
+  connected_at: string;
+  last_verified_at: string | null;
+  selected_model: string | null;
+}
+
+export type HostedTailoringRunStatus = "queued" | "running" | "succeeded" | "failed" | "canceled" | "expired";
+
+export interface HostedTailoringRunState {
+  runId: string;
+  status: HostedTailoringRunStatus;
+  provider: string | null;
+  model: string | null;
+  createdAt: string;
+  result: TailoringRunResponse | null;
+  error: string | null;
 }

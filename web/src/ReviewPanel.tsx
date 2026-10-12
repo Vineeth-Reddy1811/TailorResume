@@ -14,27 +14,38 @@ function changeLabel(change: TailoringChange): string {
 }
 
 function ChangeCard({ change, reasons }: { change: TailoringChange; reasons: string[] }) {
+  const displayReason = reasons.find((reason) => !/^Add this JD-aligned skill\b/i.test(reason));
   return (
-    <article className="change-card">
-      <div className="change-meta">
+    <details className="change-card">
+      <summary className="change-card-summary">
         <span className={`change-type ${changeCategory(change)}`}>{changeLabel(change)}</span>
         <span className="change-location">{change.section}{change.role ? ` · ${change.role}` : ""}</span>
+        <span className="change-summary-preview">{change.proposedText}</span>
+        <span className="change-disclosure-icon" aria-hidden="true" />
+      </summary>
+      <div className="change-card-details">
+        {change.originalText && (
+          <div className="diff-line removed"><span aria-hidden="true">−</span><p>{change.originalText}</p></div>
+        )}
+        <div className="diff-line added"><span aria-hidden="true">+</span><p>{change.proposedText}</p></div>
+        {change.supportingQuote && (
+          <div className="source-excerpt">
+            <span>Source excerpt</span>
+            <blockquote>{change.supportingQuote}</blockquote>
+          </div>
+        )}
+        {change.requirements.length > 0 && (
+          <div className="requirement-tags" aria-label="Related job requirements">
+            {change.requirements.map((requirement) => <span key={requirement}>{requirement}</span>)}
+          </div>
+        )}
+        {displayReason && <p className="change-reason">{displayReason}</p>}
       </div>
-      {change.originalText && (
-        <div className="diff-line removed"><span aria-hidden="true">−</span><p>{change.originalText}</p></div>
-      )}
-      <div className="diff-line added"><span aria-hidden="true">+</span><p>{change.proposedText}</p></div>
-      {change.requirements.length > 0 && (
-        <div className="requirement-tags" aria-label="Related job requirements">
-          {change.requirements.map((requirement) => <span key={requirement}>{requirement}</span>)}
-        </div>
-      )}
-      {reasons.length > 0 && <p className="change-reason">{reasons[0]}</p>}
-    </article>
+    </details>
   );
 }
 
-export default function ReviewPanel({ result }: { result: TailoringRunResponse }) {
+export default function ReviewPanel({ result, retentionCopy = "Temporary results are removed after one hour or when the local server stops." }: { result: TailoringRunResponse; retentionCopy?: string }) {
   const [filter, setFilter] = useState<ChangeFilter>("all");
   const [summaryDetail, setSummaryDetail] = useState<SummaryDetail | null>(null);
   const summaryButtonRefs = useRef<Record<SummaryDetail, HTMLButtonElement | null>>({ requirements: null, evidence: null, documents: null });
@@ -143,9 +154,36 @@ export default function ReviewPanel({ result }: { result: TailoringRunResponse }
         )}
       </section>
 
+      <section className="resume-preview-panel" aria-labelledby="resume-preview-heading">
+        <div className="resume-preview-header">
+          <div>
+            <p className="step-label">03 / TAILORED DOCUMENT</p>
+            <h2 id="resume-preview-heading">Resume preview</h2>
+            <p>Review the tailored resume before downloading. Edited lines are highlighted.</p>
+          </div>
+          <span className="preview-legend"><span aria-hidden="true">✦</span> Edited line</span>
+        </div>
+        {result.preview.length ? (
+          <article className="resume-document" aria-label="Tailored resume text preview">
+            {result.preview.map((line, index) => line.kind === "section-heading" ? (
+              <h3 className="resume-section-heading" key={`${line.section}-${index}`}>{line.text}</h3>
+            ) : (
+              <p
+                className={`resume-line${line.kind === "bullet" ? " is-bullet" : ""}${line.changed ? " is-changed" : ""}`}
+                key={`${line.section}-${index}-${line.text.slice(0, 24)}`}
+              >
+                <span className="resume-line-text">{line.text}</span>
+              </p>
+            ))}
+          </article>
+        ) : (
+          <p className="resume-preview-empty" role="status">Text preview is unavailable for this DOCX. You can still download the tailored file.</p>
+        )}
+      </section>
+
       <div className="coverage-grid">
         <section className="coverage-panel" aria-labelledby="coverage-heading">
-          <p className="step-label">03 / REQUIREMENT COVERAGE</p>
+          <p className="step-label">04 / REQUIREMENT COVERAGE</p>
           <h2 id="coverage-heading">What the audit found</h2>
           <ul className="coverage-list">
             <li><span>Already in experience</span><strong>{result.counts.experienceEvidence}</strong></li>
@@ -168,12 +206,11 @@ export default function ReviewPanel({ result }: { result: TailoringRunResponse }
 
         <section className="download-panel" aria-labelledby="download-heading">
           <span className="download-mark" aria-hidden="true">↓</span>
-          <p className="step-label">04 / YOUR FILES</p>
+          <p className="step-label">05 / YOUR FILES</p>
           <h2 id="download-heading">Ready when you are.</h2>
-          <p>Download the tailored DOCX and keep the change record with it.</p>
+          <p>Download your tailored resume after reviewing the highlighted changes above.</p>
           <a className="primary-button download-button" href={result.downloads.resume} download>Download tailored resume <span aria-hidden="true">↓</span></a>
-          <a className="report-link" href={result.downloads.report} download>Download change and audit report <span aria-hidden="true">↗</span></a>
-          <small className="expiry-note">Temporary results are removed after one hour or when the local server stops.</small>
+          <small className="expiry-note">{retentionCopy}</small>
         </section>
       </div>
 
