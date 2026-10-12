@@ -1,7 +1,9 @@
 import * as path from "path";
 import * as fs from "fs";
 import { execFileSync } from "child_process";
-import { persistLearnedSkills } from "./tailorResume";
+
+const PROJECT_ROOT = process.cwd();
+const compiledRunner = __filename.endsWith(".js");
 
 function usage(): never {
   throw new Error("Usage: npm run resume:tailor -- --resume resume.docx --job-description job.txt --output tailored.docx [--experience-profile profile.json] [--report-dir directory]");
@@ -38,24 +40,28 @@ function parseArgs(argv: string[]) {
   };
 }
 
-function runNpmScript(script: string, args: string[]): void {
-  execFileSync("npm", ["run", script, "--", ...args], {
-    cwd: process.cwd(),
+function runCli(script: "tailorResume.ts" | "applyApprovedAdditions.ts" | "atsAudit.ts", args: string[]): void {
+  const scriptPath = compiledRunner
+    ? path.join(PROJECT_ROOT, "build", script.replace(/\.ts$/, ".js"))
+    : path.join(PROJECT_ROOT, "node_modules", "ts-node", "dist", "bin.js");
+  const commandArgs = compiledRunner ? [scriptPath, ...args] : [scriptPath, path.join(PROJECT_ROOT, script), ...args];
+  execFileSync(process.execPath, commandArgs, {
+    cwd: PROJECT_ROOT,
     stdio: "inherit",
   });
 }
 
-function main() {
+async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const sharedArgs = [
     "--resume", args.resume,
     "--job-description", args.jobDescription,
     "--experience-profile", args.experienceProfile,
   ];
-  runNpmScript("resume:propose", [...sharedArgs, "--output", args.reportDirectory]);
+  runCli("tailorResume.ts", [...sharedArgs, "--output", args.reportDirectory]);
   const manifest = path.join(args.reportDirectory, "tailoring-apply-manifest.json");
-  runNpmScript("resume:apply", ["--resume", args.resume, "--approved-additions", manifest, "--output", args.output]);
-  runNpmScript("resume:audit", [
+  runCli("applyApprovedAdditions.ts", ["--resume", args.resume, "--approved-additions", manifest, "--output", args.output]);
+  runCli("atsAudit.ts", [
     "--source", args.resume,
     "--resume", args.output,
     "--job-description", args.jobDescription,
@@ -68,9 +74,13 @@ function main() {
   if (!Array.isArray(proposal.learnedSkillRecords)) {
     throw new Error("The tailoring proposal did not contain a valid pending skill-memory update.");
   }
+  const { persistLearnedSkills } = await import("./tailorResume");
   persistLearnedSkills(args.experienceProfile, proposal.learnedSkillRecords as Parameters<typeof persistLearnedSkills>[1]);
   console.log(`Tailored resume: ${args.output}`);
   console.log(`Change record and audit: ${args.reportDirectory}`);
 }
 
-main();
+void main().catch((error: unknown) => {
+  console.error(error);
+  process.exitCode = 1;
+});

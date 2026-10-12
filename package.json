@@ -23,6 +23,7 @@
     "web:api": "ts-node --project server/tsconfig.json server/index.ts",
     "web:ui": "vite --config web/vite.config.mts --host 127.0.0.1",
     "web:build": "vite build --config web/vite.config.mts",
+    "server:build": "tsc --project tsconfig.json --outDir build",
     "web:typecheck": "tsc --project web/tsconfig.json --noEmit"
   },
   "dependencies": {

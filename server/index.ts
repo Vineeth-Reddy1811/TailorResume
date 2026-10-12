@@ -465,7 +465,7 @@ function normalizeSkill(value: string): string {
 }
 
 function extractVerifiedSkills(resumeText: string): Array<Record<string, unknown>> {
-  const dictionary = JSON.parse(readFileSync(path.resolve(__dirname, "../config/skill-dictionary.json"), "utf8")) as unknown;
+  const dictionary = JSON.parse(readFileSync(path.resolve(process.cwd(), "config/skill-dictionary.json"), "utf8")) as unknown;
   if (!Array.isArray(dictionary)) throw new Error("The technical skill dictionary is unavailable.");
   const normalizedResume = normalizeSkill(resumeText);
   const found = new Map<string, Record<string, unknown>>();
@@ -1383,13 +1383,13 @@ app.use((error: Error, _request: Request, response: Response, _next: NextFunctio
   response.status(500).json({ error: "The request could not be completed. Please try again." });
 });
 
-const assetsDirectory = path.resolve(__dirname, "../web/dist");
+const assetsDirectory = path.resolve(process.cwd(), "web/dist");
 app.use(express.static(assetsDirectory, { index: "index.html" }));
 
 const server = app.listen(port, host, () => {
   if (isHostedMode()) {
     console.log(`TailorResume hosted service listening on ${host}:${port}`);
-    console.log("Hosted account storage and Claude tailoring are enabled.");
+    console.log("Hosted account storage and Claude/OpenAI API tailoring are enabled.");
     void recoverAndStartHostedTailoring();
     void cleanExpiredHostedTailoring();
   } else {

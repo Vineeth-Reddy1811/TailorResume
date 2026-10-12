@@ -15,7 +15,8 @@ import { isBulletParagraph } from "../docxStructure";
 import { getChatGPTAccessToken } from "./chatgptAuth";
 
 const execFileAsync = promisify(execFile);
-const projectRoot = path.resolve(__dirname, "..");
+const projectRoot = process.cwd();
+const compiledServer = __filename.endsWith(".js");
 const profilePath = path.join(projectRoot, "Data", "input", "experience-profile.json");
 const maxProcessingTimeMs = 5 * 60 * 1000;
 export const runDirectoryPrefix = "tailor-resume-run-";
@@ -201,10 +202,16 @@ export async function createTailoringRun(
     let processOutput = "";
     let processError = "";
     try {
+      const runner = compiledServer
+        ? [path.join(projectRoot, "build", "tailorAndApply.js")]
+        : [
+          path.join(projectRoot, "node_modules", "ts-node", "dist", "bin.js"),
+          path.join(projectRoot, "tailorAndApply.ts"),
+        ];
       const result = await execFileAsync(
-        "npm",
+        process.execPath,
         [
-          "run", "resume:tailor", "--",
+          ...runner,
           "--resume", inputPath,
           "--job-description", jobDescriptionPath,
           "--experience-profile", runProfilePath,

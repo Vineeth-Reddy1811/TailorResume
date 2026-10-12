@@ -3,8 +3,8 @@ services:
     name: tailorresume
     runtime: node
     plan: free
-    buildCommand: npm ci --include=dev && npm run web:build
-    startCommand: npm run web:api
+    buildCommand: npm ci --include=dev && npm run web:build && npm run server:build
+    startCommand: node build/server/index.js
     healthCheckPath: /api/health
     envVars:
       - key: NODE_ENV
