@@ -363,12 +363,24 @@ function loadRequirements(verifiedSkills: VerifiedSkill[] = []): Requirement[] {
   }
   const requirements = parsed as Requirement[];
   for (const skill of verifiedSkills.filter((item) => item.verified)) {
-    const existing = requirements.find((item) => normalizeSkillTerm(item.canonical) === normalizeSkillTerm(skill.canonical));
-    if (existing) {
-      existing.aliases = [...new Set([...existing.aliases, ...skill.aliases])];
-    } else {
-      requirements.push({ canonical: skill.canonical, aliases: [...new Set([skill.canonical, ...skill.aliases])] });
+    const profileTerms = new Set([skill.canonical, ...skill.aliases].map(normalizeSkillTerm).filter(Boolean));
+    const matches = requirements.filter((item) =>
+      [item.canonical, ...item.aliases].some((term) => profileTerms.has(normalizeSkillTerm(term))));
+    if (matches.length > 1) {
+      throw new Error(`Verified skill “${skill.canonical}” overlaps multiple dictionary skills (${matches.map((item) => item.canonical).join(", ")}); resolve the ambiguity in the skill dictionary or experience profile.`);
     }
+    const existing = matches[0];
+    if (!existing) {
+      requirements.push({ canonical: skill.canonical, aliases: [...new Set([skill.canonical, ...skill.aliases])] });
+      continue;
+    }
+
+    // Prefer the stable dictionary name when a learned/profile skill is an
+    // alternate canonical label for the same concept. Keep both labels as
+    // searchable aliases so existing profile facts and JD wording still match.
+    existing.aliases = [...new Set([...existing.aliases, skill.canonical, ...skill.aliases])];
+    skill.aliases = [...new Set([existing.canonical, ...existing.aliases, skill.canonical, ...skill.aliases])];
+    skill.canonical = existing.canonical;
   }
   const ownerByTerm = new Map<string, string>();
   for (const requirement of requirements) {
@@ -1076,12 +1088,21 @@ async function analyzeJobWithOpenAI(
       }),
     });
     if (!response.ok) {
-      const errorPayload = await response.json().catch(() => null) as { error?: { code?: unknown; type?: unknown } } | null;
+      const errorPayload = await response.json().catch(() => null) as {
+        error?: { code?: unknown; type?: unknown; param?: unknown; message?: unknown };
+      } | null;
       const code = typeof errorPayload?.error?.code === "string" ? errorPayload.error.code
         : typeof errorPayload?.error?.type === "string" ? errorPayload.error.type : undefined;
+      const safeCode = code && /^[a-zA-Z0-9_.-]{1,80}$/.test(code) ? code : undefined;
+      const param = typeof errorPayload?.error?.param === "string" && /^[a-zA-Z0-9_.\[\]-]{1,160}$/.test(errorPayload.error.param)
+        ? errorPayload.error.param : undefined;
+      const diagnosticMessage = typeof errorPayload?.error?.message === "string"
+        ? errorPayload.error.message.replace(/\s+/g, " ").slice(0, 400) : undefined;
+      const requestId = response.headers.get("x-request-id") ?? undefined;
+      console.error("OpenAI API request rejected", JSON.stringify({ model, status: response.status, type: errorPayload?.error?.type, code: safeCode, param, requestId, message: diagnosticMessage }));
       if (response.status === 401 || response.status === 403) throw new Error("The saved OpenAI API key was rejected. Replace it in AI provider settings.");
       if (response.status === 429) throw new Error("OpenAI API rate limited this tailoring request or its project has insufficient quota. Check OpenAI Platform billing and limits, then retry.");
-      throw new Error(`OpenAI API tailoring request failed with HTTP ${response.status}${code ? ` (${code})` : ""}. Check the selected model and OpenAI Platform project access, then retry.`);
+      throw new Error(`OpenAI API tailoring request failed with HTTP ${response.status}${safeCode ? ` (${safeCode})` : ""}${param ? ` at ${param}` : ""}${requestId ? ` [request ${requestId}]` : ""}. Check Render logs for the provider's detailed error, then retry.`);
     }
     responsePayload = await readCompletedResponse(response, "OpenAI API") as typeof responsePayload;
     if (responsePayload.usage) {
