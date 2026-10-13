@@ -17,7 +17,7 @@ interface ClaimedRun {
 function publicFailure(error: unknown): string {
   if (error instanceof UserFacingTailoringError) return error.message;
   if (error instanceof Error && /^Claude (?:rate limited|tailoring request failed)/.test(error.message)) return error.message;
-  if (error instanceof Error && /^OpenAI API (?:key was rejected|rate limited|encountered|tailoring request failed|did not|returned)/.test(error.message)) return error.message;
+  if (error instanceof Error && /^OpenAI API (?:key was rejected|prepaid credits|rate limited|encountered|tailoring request failed|did not|returned)/.test(error.message)) return error.message;
   return "Resume processing could not be completed. Check the saved resume and AI provider connection, then retry.";
 }
 
@@ -61,7 +61,7 @@ async function processRun(run: ClaimedRun): Promise<void> {
   let uploadedObjectKey: string | undefined;
   try {
     const runResult = await admin.from("tailoring_runs")
-      .select("id, user_id, source_resume_id, job_description, provider, model, expires_at, status")
+      .select("id, user_id, source_resume_id, job_description, provider, model, credential_source, expires_at, status")
       .eq("id", run.id)
       .eq("user_id", run.user_id)
       .maybeSingle();
@@ -71,9 +71,13 @@ async function processRun(run: ClaimedRun): Promise<void> {
       throw new UserFacingTailoringError("This run is missing a supported AI provider or model. Update AI provider settings and retry.");
     }
     const provider = runRow.provider;
+    const credentialSource = runRow.credential_source === "platform" ? "platform" : "user";
+    if (credentialSource === "platform" && provider !== "openai") {
+      throw new UserFacingTailoringError("TailorResume AI access only supports OpenAI runs right now.");
+    }
     const providerLabel = provider === "openai" ? "OpenAI API" : "Claude";
 
-    const [resumeResult, profileResult, credentialResult] = await Promise.all([
+    const [resumeResult, profileResult] = await Promise.all([
       admin.from("resumes")
         .select("id, object_key, original_file_name")
         .eq("id", runRow.source_resume_id)
@@ -84,24 +88,34 @@ async function processRun(run: ClaimedRun): Promise<void> {
         .select("profile_data")
         .eq("user_id", run.user_id)
         .maybeSingle(),
-      admin.from("provider_connections")
-        .select("credential_ciphertext, credential_iv, credential_auth_tag, key_version, selected_model")
-        .eq("user_id", run.user_id)
-        .eq("provider", provider)
-        .maybeSingle(),
     ]);
     if (resumeResult.error || !resumeResult.data) throw new UserFacingTailoringError("Your saved base resume is no longer available. Upload it again, then retry.");
     if (profileResult.error || !profileResult.data?.profile_data) throw new UserFacingTailoringError("Your resume profile is unavailable. Upload or replace your base resume, then retry.");
-    if (credentialResult.error || !credentialResult.data || credentialResult.data.selected_model !== runRow.model) {
-      throw new UserFacingTailoringError(`The ${providerLabel} key or selected model changed before this run started. Retry with your current provider settings.`);
-    }
 
-    const credential = decryptProviderCredential(run.user_id, provider, {
-      ciphertext: credentialResult.data.credential_ciphertext,
-      iv: credentialResult.data.credential_iv,
-      authTag: credentialResult.data.credential_auth_tag,
-      keyVersion: credentialResult.data.key_version,
-    });
+    let credential: string;
+    if (credentialSource === "platform") {
+      const platformApiKey = process.env.TAILORRESUME_PLATFORM_AI_API_KEY?.trim();
+      const platformModel = process.env.TAILORRESUME_PLATFORM_AI_MODEL?.trim();
+      if (!platformApiKey || !platformModel || platformModel !== runRow.model) {
+        throw new UserFacingTailoringError("TailorResume AI access is temporarily unavailable. Please retry later.");
+      }
+      credential = platformApiKey;
+    } else {
+      const credentialResult = await admin.from("provider_connections")
+        .select("credential_ciphertext, credential_iv, credential_auth_tag, key_version, selected_model")
+        .eq("user_id", run.user_id)
+        .eq("provider", provider)
+        .maybeSingle();
+      if (credentialResult.error || !credentialResult.data || credentialResult.data.selected_model !== runRow.model) {
+        throw new UserFacingTailoringError(`The ${providerLabel} key or selected model changed before this run started. Retry with your current provider settings.`);
+      }
+      credential = decryptProviderCredential(run.user_id, provider, {
+        ciphertext: credentialResult.data.credential_ciphertext,
+        iv: credentialResult.data.credential_iv,
+        authTag: credentialResult.data.credential_auth_tag,
+        keyVersion: credentialResult.data.key_version,
+      });
+    }
     const download = await admin.storage.from(hostedOutputFolder).download(resumeResult.data.object_key);
     if (download.error || !download.data) throw new UserFacingTailoringError("Your saved base resume could not be opened. Replace it in the resume section and retry.");
     const resumeBytes = Buffer.from(await download.data.arrayBuffer());

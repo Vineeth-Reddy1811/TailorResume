@@ -25,3 +25,9 @@ services:
         sync: false
       - key: AI_CREDENTIAL_ENCRYPTION_KEY
         sync: false
+      - key: TAILORRESUME_PLATFORM_AI_API_KEY
+        sync: false
+      - key: TAILORRESUME_PLATFORM_AI_MODEL
+        sync: false
+      - key: TAILORRESUME_INITIAL_AI_ACCESS_CODE
+        sync: false

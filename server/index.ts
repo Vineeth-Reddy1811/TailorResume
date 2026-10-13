@@ -1,6 +1,6 @@
 import express, { type NextFunction, type Request, type Response } from "express";
 import multer from "multer";
-import { createHash, randomUUID } from "crypto";
+import { createHash, randomUUID, timingSafeEqual } from "crypto";
 import { inflateRawSync } from "zlib";
 import { promises as fs, readFileSync } from "fs";
 import * as os from "os";
@@ -41,6 +41,7 @@ const runRetentionMs = 60 * 60 * 1000;
 const uploadLimitBytes = 15 * 1024 * 1024;
 const jobDescriptionCharacterLimit = 30_000;
 const jobDescriptionLimitBytes = jobDescriptionCharacterLimit * 4;
+const platformAiInviteRuns = 3;
 const allowedOrigins = new Set([
   "http://127.0.0.1:4170",
   "http://localhost:4170",
@@ -286,6 +287,20 @@ function requireResumeUploadCapacity(_request: Request, response: Response, next
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function platformAiConfiguration(): { apiKey: string; model: string } | null {
+  const apiKey = process.env.TAILORRESUME_PLATFORM_AI_API_KEY?.trim();
+  const model = process.env.TAILORRESUME_PLATFORM_AI_MODEL?.trim();
+  return apiKey && model ? { apiKey, model } : null;
+}
+
+function matchesPlatformAiInvite(code: string): boolean {
+  const expected = process.env.TAILORRESUME_INITIAL_AI_ACCESS_CODE?.trim();
+  if (!expected || !code) return false;
+  const expectedDigest = createHash("sha256").update(expected).digest();
+  const suppliedDigest = createHash("sha256").update(code).digest();
+  return timingSafeEqual(expectedDigest, suppliedDigest);
 }
 
 function hostedRunState(row: Record<string, unknown>): HostedTailoringRunState {
@@ -637,6 +652,75 @@ app.get("/api/account", requireHostedUser, async (_request, response) => {
   }
 });
 
+app.get("/api/account/platform-ai-access", requireHostedUser, async (_request, response) => {
+  const configuration = platformAiConfiguration();
+  if (!configuration) {
+    response.json({ enabled: false, redeemed: false, runsGranted: 0, runsRemaining: 0 });
+    return;
+  }
+  try {
+    const result = await getSupabaseAdminClient().from("platform_ai_access")
+      .select("runs_granted, runs_used")
+      .eq("user_id", accountUserId(response))
+      .maybeSingle();
+    if (result.error) {
+      console.error("Could not load platform AI access.");
+      response.status(503).json({ error: "Platform AI access could not be loaded. Apply the latest Supabase migration, then retry." });
+      return;
+    }
+    const runsGranted = Number(result.data?.runs_granted ?? 0);
+    const runsUsed = Number(result.data?.runs_used ?? 0);
+    response.json({
+      enabled: true,
+      redeemed: Boolean(result.data),
+      runsGranted,
+      runsRemaining: Math.max(0, runsGranted - runsUsed),
+      model: configuration.model,
+    });
+  } catch {
+    response.status(503).json({ error: "Platform AI access could not be loaded. Please retry." });
+  }
+});
+
+app.post("/api/account/platform-ai-access/redeem", requireHostedUser, requireHostedOrigin, async (request, response) => {
+  if (!isRecord(request.body) || Object.keys(request.body).sort().join(",") !== "code" ||
+      typeof request.body.code !== "string" || request.body.code.length > 200) {
+    response.status(400).json({ error: "Enter a valid AI access code." });
+    return;
+  }
+  if (!platformAiConfiguration()) {
+    response.status(503).json({ error: "TailorResume AI access is not configured yet." });
+    return;
+  }
+  if (!matchesPlatformAiInvite(request.body.code)) {
+    response.status(403).json({ error: "That AI access code is not valid." });
+    return;
+  }
+  try {
+    const result = await getSupabaseAdminClient().rpc("redeem_platform_ai_invite", {
+      p_user_id: accountUserId(response),
+      p_runs_granted: platformAiInviteRuns,
+    });
+    if (result.error || !isRecord(result.data)) {
+      console.error("Could not redeem platform AI access.");
+      response.status(503).json({ error: "AI access could not be activated. Apply the latest Supabase migration, then retry." });
+      return;
+    }
+    response.json({
+      access: {
+        enabled: true,
+        redeemed: true,
+        newlyRedeemed: result.data.newlyRedeemed === true,
+        runsGranted: Number(result.data.runsGranted ?? 0),
+        runsRemaining: Number(result.data.runsRemaining ?? 0),
+        model: platformAiConfiguration()?.model,
+      },
+    });
+  } catch {
+    response.status(503).json({ error: "AI access could not be activated. Please retry." });
+  }
+});
+
 app.get("/api/account/runs/latest", requireHostedUser, async (_request, response) => {
   try {
     const result = await accountSupabase(response).from("tailoring_runs")
@@ -663,9 +747,11 @@ app.get("/api/account/runs/latest", requireHostedUser, async (_request, response
 app.post("/api/account/runs", requireHostedUser, requireHostedOrigin, async (request, response) => {
   const body = request.body;
   const jobDescription = typeof body?.jobDescription === "string" ? body.jobDescription.trim() : "";
-  if (!isRecord(body) || Object.keys(body).sort().join(",") !== "aiConsent,jobDescription,provider" ||
-      (body.provider !== "anthropic" && body.provider !== "openai") || body.aiConsent !== true) {
-    response.status(400).json({ error: "Choose Claude or OpenAI API and confirm the AI data-sharing notice before starting a run." });
+  if (!isRecord(body) || Object.keys(body).sort().join(",") !== "aiConsent,aiSource,jobDescription,provider" ||
+      (body.provider !== "anthropic" && body.provider !== "openai") ||
+      (body.aiSource !== "user" && body.aiSource !== "platform") || body.aiConsent !== true ||
+      (body.aiSource === "platform" && body.provider !== "openai")) {
+    response.status(400).json({ error: "Choose an available AI provider and confirm the AI data-sharing notice before starting a run." });
     return;
   }
   if (!jobDescription || jobDescription.length > jobDescriptionCharacterLimit) {
@@ -677,7 +763,7 @@ app.post("/api/account/runs", requireHostedUser, requireHostedOrigin, async (req
   const accountClient = accountSupabase(response);
   try {
     const admin = getSupabaseAdminClient();
-    const [resumeResult, profileResult, providerResult] = await Promise.all([
+    const [resumeResult, profileResult] = await Promise.all([
       accountClient.from("resumes")
         .select("id, original_file_name")
         .eq("user_id", userId)
@@ -685,11 +771,6 @@ app.post("/api/account/runs", requireHostedUser, requireHostedOrigin, async (req
         .is("deleted_at", null)
         .maybeSingle(),
       accountClient.from("experience_profiles").select("user_id").eq("user_id", userId).maybeSingle(),
-      admin.from("provider_connections")
-        .select("selected_model, credential_ciphertext")
-        .eq("user_id", userId)
-        .eq("provider", body.provider)
-        .maybeSingle(),
     ]);
     if (resumeResult.error || !resumeResult.data) {
       response.status(409).json({ error: "Upload a base resume before starting a tailoring run." });
@@ -699,9 +780,25 @@ app.post("/api/account/runs", requireHostedUser, requireHostedOrigin, async (req
       response.status(409).json({ error: "Upload or replace your base resume to create its profile before starting a tailoring run." });
       return;
     }
-    if (providerResult.error || !providerResult.data?.credential_ciphertext || typeof providerResult.data.selected_model !== "string") {
-      response.status(409).json({ error: `Connect a ${body.provider === "openai" ? "OpenAI API" : "Claude"} key and select a model before starting a tailoring run.` });
-      return;
+    let selectedModel: string;
+    if (body.aiSource === "platform") {
+      const configuration = platformAiConfiguration();
+      if (!configuration) {
+        response.status(503).json({ error: "TailorResume AI access is not configured yet." });
+        return;
+      }
+      selectedModel = configuration.model;
+    } else {
+      const providerResult = await admin.from("provider_connections")
+        .select("selected_model, credential_ciphertext")
+        .eq("user_id", userId)
+        .eq("provider", body.provider)
+        .maybeSingle();
+      if (providerResult.error || !providerResult.data?.credential_ciphertext || typeof providerResult.data.selected_model !== "string") {
+        response.status(409).json({ error: `Connect a ${body.provider === "openai" ? "OpenAI API" : "Claude"} key and select a model before starting a tailoring run.` });
+        return;
+      }
+      selectedModel = providerResult.data.selected_model;
     }
 
     const recentRuns = await admin.from("tailoring_runs")
@@ -719,14 +816,15 @@ app.post("/api/account/runs", requireHostedUser, requireHostedOrigin, async (req
     }
 
     const runId = randomUUID();
-    const saved = await admin.rpc("create_hosted_tailoring_run", {
+    const runParameters = {
       p_user_id: userId,
       p_run_id: runId,
       p_source_resume_id: resumeResult.data.id,
       p_job_description: jobDescription,
-      p_provider: body.provider,
-      p_model: providerResult.data.selected_model,
-    });
+    };
+    const saved = body.aiSource === "platform"
+      ? await admin.rpc("create_platform_ai_tailoring_run", { ...runParameters, p_model: selectedModel })
+      : await admin.rpc("create_hosted_tailoring_run", { ...runParameters, p_provider: body.provider, p_model: selectedModel });
     if (saved.error || !isRecord(saved.data)) {
       if (saved.error?.code === "23505") {
         response.status(409).json({ error: "You already have a tailoring run in progress. Wait for it to finish before starting another." });
@@ -734,6 +832,10 @@ app.post("/api/account/runs", requireHostedUser, requireHostedOrigin, async (req
       }
       if (saved.error?.code === "P0002") {
         response.status(409).json({ error: "Your default resume changed. Reload your account and retry the tailoring run." });
+        return;
+      }
+      if (saved.error?.code === "P0001") {
+        response.status(403).json({ error: "Your TailorResume AI run allowance is used. Enter an eligible access code or connect your own AI provider key." });
         return;
       }
       console.error("Could not save a hosted tailoring request.");
@@ -1385,6 +1487,9 @@ app.use((error: Error, _request: Request, response: Response, _next: NextFunctio
 
 const assetsDirectory = path.resolve(process.cwd(), "web/dist");
 app.use(express.static(assetsDirectory, { index: "index.html" }));
+app.get(["/settings/ai", "/results/:runId"], (_request, response) => {
+  response.sendFile(path.join(assetsDirectory, "index.html"));
+});
 
 const server = app.listen(port, host, () => {
   if (isHostedMode()) {

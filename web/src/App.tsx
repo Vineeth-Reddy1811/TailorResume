@@ -56,7 +56,7 @@ export default function App() {
       const activeTheme = themeMode === "system" ? (systemTheme.matches ? "dark" : "light") : themeMode;
       root.setAttribute("data-theme", activeTheme);
       const themeColor = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
-      if (themeColor) themeColor.content = activeTheme === "dark" ? "#111713" : "#f5f5f1";
+      if (themeColor) themeColor.content = activeTheme === "dark" ? "#111722" : "#f4f6fa";
     };
     applyTheme();
     try {

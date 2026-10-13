@@ -11,5 +11,5 @@
   document.documentElement.dataset.theme = active;
 
   const themeColor = document.querySelector('meta[name="theme-color"]');
-  if (themeColor) themeColor.content = active === "dark" ? "#111713" : "#f5f5f1";
+  if (themeColor) themeColor.content = active === "dark" ? "#111722" : "#f4f6fa";
 })();

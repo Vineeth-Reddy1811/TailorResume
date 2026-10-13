@@ -853,6 +853,9 @@ async function readCompletedResponse(response: Response, providerLabel = "ChatGP
     if (safeCode === "insufficient_quota" || safeCode === "rate_limit_exceeded") {
       throw new Error(`OpenAI API rate limited this tailoring request (${safeCode}). Check OpenAI Platform billing and limits, then retry.`);
     }
+    if (safeCode === "credit_balance_exhausted") {
+      throw new Error("OpenAI API prepaid credits are exhausted. Add credits in OpenAI API billing settings, wait a few minutes for the balance to update, then retry. ChatGPT subscription billing is separate.");
+    }
     if (safeCode === "server_error" || safeCode === "internal_error") {
       throw new Error(`OpenAI API encountered a temporary server error (${safeCode}). Retry the tailoring run.`);
     }

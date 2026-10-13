@@ -1,9 +1,17 @@
-import { useEffect, useState, type ChangeEvent, type FormEvent } from "react";
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import type { AuthenticatedAppUser, HostedAccountResponse, HostedProviderConnection, HostedResumeRecord, HostedTailoringRunState } from "../../shared/api";
 import ReviewPanel from "./ReviewPanel";
 
 type HostedProvider = HostedProviderConnection["provider"];
 type HostedTailoringProvider = Extract<HostedProvider, "anthropic" | "openai">;
+type HostedRoute = { page: "workspace" | "settings" | "results"; runId?: string };
+
+function routeFromLocation(): HostedRoute {
+  if (window.location.pathname === "/settings/ai") return { page: "settings" };
+  const match = window.location.pathname.match(/^\/results\/([0-9a-f-]{36})$/i);
+  if (match) return { page: "results", runId: match[1] };
+  return { page: "workspace" };
+}
 
 function providerLabel(provider: HostedProvider): string {
   if (provider === "anthropic") return "Claude";
@@ -25,6 +33,7 @@ function messageFrom(payload: unknown, fallback: string): string {
 }
 
 export default function HostedWorkspace({ user, authBusy, themeMode, onSignOut, onCycleTheme }: HostedWorkspaceProps) {
+  const [route, setRoute] = useState<HostedRoute>(routeFromLocation);
   const [account, setAccount] = useState<HostedAccountResponse | null>(null);
   const [providerConnections, setProviderConnections] = useState<HostedProviderConnection[]>([]);
   const [providerModels, setProviderModels] = useState<Record<HostedProvider, Array<{ id: string; name: string }>>>({ anthropic: [], xai: [], openai: [] });
@@ -35,6 +44,10 @@ export default function HostedWorkspace({ user, authBusy, themeMode, onSignOut, 
   const [providerKeys, setProviderKeys] = useState<Record<HostedProvider, string>>({ anthropic: "", xai: "", openai: "" });
   const [savingProvider, setSavingProvider] = useState<HostedProvider | null>(null);
   const [tailoringProvider, setTailoringProvider] = useState<HostedTailoringProvider>("anthropic");
+  const [aiSource, setAiSource] = useState<"user" | "platform">("user");
+  const [platformAccess, setPlatformAccess] = useState<{ enabled: boolean; redeemed: boolean; runsGranted: number; runsRemaining: number; model?: string }>({ enabled: false, redeemed: false, runsGranted: 0, runsRemaining: 0 });
+  const [inviteCode, setInviteCode] = useState("");
+  const [redeemingInvite, setRedeemingInvite] = useState(false);
   const [loading, setLoading] = useState(true);
   const [uploadingResume, setUploadingResume] = useState(false);
   const [accountError, setAccountError] = useState("");
@@ -43,6 +56,13 @@ export default function HostedWorkspace({ user, authBusy, themeMode, onSignOut, 
   const [aiConsent, setAiConsent] = useState(false);
   const [tailoring, setTailoring] = useState(false);
   const [hostedRun, setHostedRun] = useState<HostedTailoringRunState | null>(null);
+  const autoOpenResultRunId = useRef<string | null>(null);
+
+  function navigateTo(path: string): void {
+    window.history.pushState({}, "", path);
+    setRoute(routeFromLocation());
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
 
   async function refreshAccount(): Promise<void> {
     const response = await fetch("/api/account", { cache: "no-store", credentials: "same-origin" });
@@ -58,7 +78,27 @@ export default function HostedWorkspace({ user, authBusy, themeMode, onSignOut, 
     setProviderConnections(Array.isArray(payload.connections) ? payload.connections : []);
   }
 
+  async function refreshPlatformAccess(): Promise<void> {
+    const response = await fetch("/api/account/platform-ai-access", { cache: "no-store", credentials: "same-origin" });
+    const payload = await response.json() as { enabled?: boolean; redeemed?: boolean; runsGranted?: number; runsRemaining?: number; model?: string; error?: string };
+    if (!response.ok) throw new Error(messageFrom(payload, "TailorResume AI access could not be loaded."));
+    setPlatformAccess({
+      enabled: payload.enabled === true,
+      redeemed: payload.redeemed === true,
+      runsGranted: Number(payload.runsGranted ?? 0),
+      runsRemaining: Number(payload.runsRemaining ?? 0),
+      ...(typeof payload.model === "string" ? { model: payload.model } : {}),
+    });
+  }
+
   useEffect(() => {
+    const onPopState = () => setRoute(routeFromLocation());
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
+  useEffect(() => {
+    if (route.page === "results") return;
     let active = true;
     Promise.all([
       fetch("/api/account", { cache: "no-store", credentials: "same-origin" }).then(async (response) => {
@@ -78,7 +118,35 @@ export default function HostedWorkspace({ user, authBusy, themeMode, onSignOut, 
       })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
+  }, [route.page]);
+
+  useEffect(() => {
+    void refreshPlatformAccess().catch((error: unknown) => {
+      setAccountError(error instanceof Error ? error.message : "TailorResume AI access could not be loaded.");
+    });
   }, []);
+
+  useEffect(() => {
+    if (route.page !== "results" || !route.runId) return;
+    let active = true;
+    void fetch(`/api/account/runs/${encodeURIComponent(route.runId)}`, { cache: "no-store", credentials: "same-origin" })
+      .then(async (response) => {
+        const payload = await response.json() as { run?: HostedTailoringRunState; error?: string };
+        if (!response.ok || !payload.run) throw new Error(messageFrom(payload, "This tailoring result could not be loaded."));
+        if (active) setHostedRun(payload.run);
+      })
+      .catch((error: unknown) => {
+        if (active) setAccountError(error instanceof Error ? error.message : "This tailoring result could not be loaded.");
+      });
+    return () => { active = false; };
+  }, [route.page, route.runId]);
+
+  useEffect(() => {
+    if (hostedRun?.status === "succeeded" && route.page !== "results" && hostedRun.runId === autoOpenResultRunId.current) {
+      autoOpenResultRunId.current = null;
+      navigateTo(`/results/${encodeURIComponent(hostedRun.runId)}`);
+    }
+  }, [hostedRun?.status, hostedRun?.runId, route.page]);
 
   useEffect(() => {
     if (!hostedRun || !["queued", "running"].includes(hostedRun.status)) return;
@@ -101,6 +169,7 @@ export default function HostedWorkspace({ user, authBusy, themeMode, onSignOut, 
   }, [hostedRun]);
 
   useEffect(() => {
+    if (route.page !== "workspace") return;
     let active = true;
     void fetch("/api/account/runs/latest", { cache: "no-store", credentials: "same-origin" })
       .then(async (response) => {
@@ -112,7 +181,7 @@ export default function HostedWorkspace({ user, authBusy, themeMode, onSignOut, 
       .then((run) => { if (active && run) setHostedRun(run); })
       .catch((error: unknown) => { if (active) setAccountError(error instanceof Error ? error.message : "Your latest tailoring run could not be loaded."); });
     return () => { active = false; };
-  }, []);
+  }, [route.page]);
 
   async function saveProvider(provider: HostedProvider, event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
@@ -138,6 +207,7 @@ export default function HostedWorkspace({ user, authBusy, themeMode, onSignOut, 
       setSelectedModelDraft((current) => ({ ...current, [provider]: payload.selectedModel ?? "" }));
       await refreshProviders();
       setAccountNotice(`${providerLabel(provider)} key verified and saved encrypted to your account.`);
+      navigateTo("/");
     } catch (error) {
       setAccountError(error instanceof Error ? error.message : "The provider key could not be saved.");
     } finally {
@@ -207,6 +277,37 @@ export default function HostedWorkspace({ user, authBusy, themeMode, onSignOut, 
     }
   }
 
+  async function redeemPlatformInvite(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    setAccountError("");
+    setAccountNotice("");
+    setRedeemingInvite(true);
+    try {
+      const response = await fetch("/api/account/platform-ai-access/redeem", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: inviteCode }),
+      });
+      const payload = await response.json() as { access?: { enabled?: boolean; redeemed?: boolean; runsGranted?: number; runsRemaining?: number; model?: string }; error?: string };
+      if (!response.ok || !payload.access) throw new Error(messageFrom(payload, "The AI access code could not be activated."));
+      setPlatformAccess({
+        enabled: payload.access.enabled === true,
+        redeemed: payload.access.redeemed === true,
+        runsGranted: Number(payload.access.runsGranted ?? 0),
+        runsRemaining: Number(payload.access.runsRemaining ?? 0),
+        ...(typeof payload.access.model === "string" ? { model: payload.access.model } : {}),
+      });
+      setInviteCode("");
+      setAccountNotice(`TailorResume AI is active. ${payload.access.runsRemaining ?? 0} of ${payload.access.runsGranted ?? 0} runs remain.`);
+      navigateTo("/");
+    } catch (error) {
+      setAccountError(error instanceof Error ? error.message : "The AI access code could not be activated.");
+    } finally {
+      setRedeemingInvite(false);
+    }
+  }
+
   async function submitHostedRun(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
     setAccountError("");
@@ -216,8 +317,12 @@ export default function HostedWorkspace({ user, authBusy, themeMode, onSignOut, 
       setAccountError("Save a base resume before tailoring.");
       return;
     }
-    if (!provider) {
+    if (aiSource === "user" && !provider) {
       setAccountError(`Connect ${providerLabel(activeTailoringProvider)} and select a model before tailoring.`);
+      return;
+    }
+    if (aiSource === "platform" && (!platformAccess.enabled || !platformAccess.redeemed || platformAccess.runsRemaining <= 0)) {
+      setAccountError("Activate an AI access code or connect your own provider key before starting a run.");
       return;
     }
     if (!jobDescription.trim() || jobDescription.length > 30_000) {
@@ -234,11 +339,15 @@ export default function HostedWorkspace({ user, authBusy, themeMode, onSignOut, 
         method: "POST",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ jobDescription: jobDescription.trim(), provider: activeTailoringProvider, aiConsent: true }),
+        body: JSON.stringify({ jobDescription: jobDescription.trim(), provider: activeTailoringProvider, aiSource, aiConsent: true }),
       });
       const payload = await response.json() as { run?: HostedTailoringRunState; error?: string };
       if (!response.ok || !payload.run) throw new Error(messageFrom(payload, "The tailoring run could not be started."));
+      autoOpenResultRunId.current = payload.run.runId;
       setHostedRun(payload.run);
+      if (aiSource === "platform") {
+        setPlatformAccess((current) => ({ ...current, runsRemaining: Math.max(0, current.runsRemaining - 1) }));
+      }
       setAccountNotice("Tailoring started. You can keep this page open while the result is prepared.");
     } catch (error) {
       setAccountError(error instanceof Error ? error.message : "The tailoring run could not be started.");
@@ -256,6 +365,7 @@ export default function HostedWorkspace({ user, authBusy, themeMode, onSignOut, 
       if (!response.ok) throw new Error(messageFrom(payload, "The tailoring run could not be deleted."));
       setHostedRun(null);
       setAccountNotice("The tailoring run and generated resume were deleted.");
+      if (route.page === "results") navigateTo("/");
     } catch (error) {
       setAccountError(error instanceof Error ? error.message : "The tailoring run could not be deleted.");
     }
@@ -321,25 +431,151 @@ export default function HostedWorkspace({ user, authBusy, themeMode, onSignOut, 
   const currentResume = account?.resumes.find((resume) => resume.is_default) ?? null;
   const availableTailoringProviders = (["anthropic", "openai"] as const).filter((provider) =>
     providerConnections.some((connection) => connection.provider === provider && Boolean(connection.selected_model)));
-  const activeTailoringProvider = availableTailoringProviders.includes(tailoringProvider)
+  const activeTailoringProvider = aiSource === "platform" ? "openai" : availableTailoringProviders.includes(tailoringProvider)
     ? tailoringProvider
     : availableTailoringProviders[0] ?? tailoringProvider;
+  useEffect(() => {
+    if (availableTailoringProviders.length === 0 && platformAccess.redeemed && platformAccess.runsRemaining > 0) {
+      setAiSource("platform");
+    } else if (!platformAccess.redeemed && availableTailoringProviders.length > 0) {
+      setAiSource("user");
+    }
+  }, [availableTailoringProviders.length, platformAccess.redeemed, platformAccess.runsRemaining]);
+  const providerSettingsPanel = (
+    <section className="hosted-card" aria-labelledby="providers-title">
+      <div className="panel-heading">
+        <div><span className="step-label">01 / PERSONAL PROVIDERS</span><h2 id="providers-title">Your provider keys</h2></div>
+        <span className="field-meta">Bring your own API key</span>
+      </div>
+      <p className="hosted-help-copy">Your keys are encrypted by the server and never returned to the browser. Saving a key checks its model catalogue; it does not send your resume or job description. Provider usage is billed by that provider. <a href="https://platform.openai.com/api-keys" target="_blank" rel="noreferrer">Manage OpenAI API keys</a>.</p>
+      {(["anthropic", "xai", "openai"] as const).map((provider) => {
+        const connection = providerConnections.find((item) => item.provider === provider);
+        const connected = Boolean(connection);
+        const label = providerLabel(provider);
+        return (
+          <form className="hosted-provider-row" key={provider} onSubmit={(event) => void saveProvider(provider, event)}>
+            <div className="hosted-provider-heading">
+              <div><strong>{label}</strong><span>{connection?.last_verified_at ? `Key verified ${new Date(connection.last_verified_at).toLocaleDateString()}` : connected ? "Key saved · not yet verified" : "No key saved"}</span></div>
+              {connected && <button className="text-button hosted-remove-button" type="button" onClick={() => void removeProvider(provider)}>Remove key</button>}
+            </div>
+            <label className="visually-hidden" htmlFor={`${provider}-api-key`}>{label} API key</label>
+            <input id={`${provider}-api-key`} className="hosted-provider-input" type="password" autoComplete="new-password" value={providerKeys[provider]} onChange={(event) => setProviderKeys((current) => ({ ...current, [provider]: event.target.value }))} placeholder={connected ? "Enter a replacement key" : "Paste your API key"} minLength={20} maxLength={500} />
+            <div className="hosted-provider-footer">
+              <span className="field-meta">Usage is billed by {provider === "anthropic" ? "Anthropic" : provider === "xai" ? "xAI" : "OpenAI Platform"}.</span>
+              <button className="secondary-button" type="submit" disabled={savingProvider !== null || providerKeys[provider].length < 20}>{savingProvider === provider ? "Verifying…" : connected ? "Replace key" : "Verify key"}</button>
+            </div>
+            {connected && <div className="hosted-model-selection">
+              <span className="field-meta">Selected model: <strong>{connection?.selected_model ?? "Not selected"}</strong></span>
+              {editingModel !== provider
+                ? <button className="text-button" type="button" disabled={loadingModels !== null} onClick={() => void loadProviderModels(provider)}>{loadingModels === provider ? "Loading models…" : "Change model"}</button>
+                : <div className="hosted-model-editor">
+                  <label className="visually-hidden" htmlFor={`${provider}-model`}>{label} model</label>
+                  <select id={`${provider}-model`} className="hosted-provider-input" value={selectedModelDraft[provider]} onChange={(event) => setSelectedModelDraft((current) => ({ ...current, [provider]: event.target.value }))}>
+                    <option value="" disabled>Choose an available model</option>
+                    {providerModels[provider].map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}
+                  </select>
+                  <div className="hosted-provider-footer">
+                    <button className="secondary-button" type="button" disabled={savingModel !== null || !selectedModelDraft[provider]} onClick={() => void saveProviderModel(provider)}>{savingModel === provider ? "Saving…" : "Save model"}</button>
+                    <button className="text-button" type="button" disabled={savingModel === provider} onClick={() => setEditingModel(null)}>Cancel</button>
+                  </div>
+                </div>}
+            </div>}
+          </form>
+        );
+      })}
+    </section>
+  );
+  const hostedHeader = (
+    <header className="topbar">
+      <a className="brand" href="/" onClick={(event) => { event.preventDefault(); navigateTo("/"); }} aria-label="TailorResume home">
+        <span className="brand-mark" aria-hidden="true">T</span>
+        <span>tailor<span className="brand-light">resume</span></span>
+      </a>
+      <div className="topbar-actions">
+        {route.page === "workspace"
+          ? <button className="secondary-button" type="button" onClick={() => navigateTo("/settings/ai")}>AI settings</button>
+          : <button className="secondary-button" type="button" onClick={() => navigateTo("/")}>Back to workspace</button>}
+        <button className="theme-toggle" type="button" onClick={onCycleTheme} aria-label={`Theme setting: ${themeMode}. Activate to change theme`} title="Cycles between system, light, and dark themes">
+          <span aria-hidden="true">{themeMode === "dark" ? "☾" : themeMode === "light" ? "☀" : "◐"}</span>
+          <span>{themeMode === "system" ? "System" : themeMode === "light" ? "Light" : "Dark"}</span>
+        </button>
+        <button className="secondary-button" type="button" onClick={onSignOut} disabled={authBusy}>{authBusy ? "Signing out…" : "Sign out"}</button>
+      </div>
+    </header>
+  );
+
+  if (route.page === "settings") {
+    return (
+      <div className="app-shell">
+        {hostedHeader}
+        <main id="top" className="main-content hosted-main settings-main">
+          <section className="intro" aria-labelledby="settings-title">
+            <p className="eyebrow">ACCOUNT SETTINGS <span>·</span> AI PROVIDERS</p>
+            <h1 id="settings-title">AI access and models.</h1>
+            <p className="intro-copy">Manage your own provider keys or activate your invitation to use TailorResume’s shared AI access.</p>
+          </section>
+          {accountError && <div className="error-message hosted-feedback" role="alert"><span aria-hidden="true">!</span>{accountError}</div>}
+          {accountNotice && <div className="account-notice hosted-feedback" role="status">{accountNotice}</div>}
+          <section className="hosted-card platform-ai-card" aria-labelledby="platform-ai-title">
+            <div className="panel-heading">
+              <div><span className="step-label">INVITATION ACCESS</span><h2 id="platform-ai-title">TailorResume AI</h2></div>
+              {platformAccess.redeemed && <span className="status-pill">{platformAccess.runsRemaining} runs left</span>}
+            </div>
+          {!platformAccess.enabled
+              ? <p className="hosted-help-copy">Shared AI access is not available yet. You can still connect your own provider key below.</p>
+              : platformAccess.redeemed
+                ? <p className="hosted-help-copy">Your invitation is active. {platformAccess.runsRemaining} of {platformAccess.runsGranted} included runs remain. {platformAccess.runsRemaining === 0 ? "Connect your own provider key to keep tailoring resumes." : "No personal AI API key is needed."}</p>
+                : <>
+                  <p className="hosted-help-copy">Enter your private access code to use TailorResume’s OpenAI connection. Each account receives up to three tailoring runs. The job description and relevant resume bullets are sent to OpenAI when you start a run.</p>
+                  <form className="invite-code-form" onSubmit={(event) => void redeemPlatformInvite(event)}>
+                    <label htmlFor="platform-ai-invite">AI access code</label>
+                    <div className="invite-code-controls">
+                      <input id="platform-ai-invite" className="hosted-provider-input" type="password" autoComplete="off" maxLength={200} value={inviteCode} onChange={(event) => setInviteCode(event.target.value)} required />
+                      <button className="primary-button" type="submit" disabled={redeemingInvite || !inviteCode.trim()}>{redeemingInvite ? "Checking…" : "Activate access"}</button>
+                    </div>
+                  </form>
+                </>}
+          </section>
+          {providerSettingsPanel}
+        </main>
+        <footer className="page-footer"><span>TAILORRESUME</span><span>AI provider settings</span></footer>
+      </div>
+    );
+  }
+
+  if (route.page === "results") {
+    const run = hostedRun?.runId === route.runId ? hostedRun : null;
+    return (
+      <div className="app-shell">
+        {hostedHeader}
+        <main className="main-content hosted-main hosted-results-main">
+          <section className="results-heading" aria-labelledby="hosted-results-title">
+            <div>
+              <p className="eyebrow">{run?.status === "succeeded" ? "TAILORING COMPLETE" : "TAILORING RUN"} <span>·</span> {run?.result?.originalFileName ?? "YOUR RESUME"}</p>
+              <h1 id="hosted-results-title">Review your tailored resume.</h1>
+              <p className="intro-copy">Check the highlighted edits, then download the DOCX when it looks right.</p>
+            </div>
+          </section>
+          {accountError && <div className="error-message hosted-feedback" role="alert"><span aria-hidden="true">!</span>{accountError}</div>}
+          {!run && !accountError && <section className="hosted-card result-loading" role="status">Loading this tailoring run…</section>}
+          {!run && accountError && <section className="hosted-card" role="alert"><h2>Result unavailable.</h2><p className="intro-copy">Check that you are signed in to the account that created this run, or return to your workspace.</p><button className="primary-button" type="button" onClick={() => navigateTo("/")}>Back to workspace</button></section>}
+          {run && ["queued", "running"].includes(run.status) && <section className="hosted-card result-loading" role="status">{run.status === "queued" ? "Your resume is queued…" : "Your resume is being prepared…"}</section>}
+          {run && ["failed", "canceled", "expired"].includes(run.status) && <section className="hosted-card" role="alert"><h2>Tailoring did not finish.</h2><p className="intro-copy">{run.error || "Return to the workspace and try again."}</p><button className="primary-button" type="button" onClick={() => navigateTo("/")}>Back to workspace</button></section>}
+          {run?.result && <>
+            <div className="results-actions"><button className="text-button hosted-remove-button" type="button" onClick={() => void deleteHostedRun()}>Delete this run</button></div>
+            <section className="hosted-card hosted-run-result" aria-label="Tailoring result">
+              <ReviewPanel result={run.result} retentionCopy="This hosted result and generated file expire after 30 days. You can delete them sooner." />
+            </section>
+          </>}
+        </main>
+        <footer className="page-footer"><span>TAILORRESUME</span><span>Private hosted workspace</span></footer>
+      </div>
+    );
+  }
 
   return (
     <div className="app-shell">
-      <header className="topbar">
-        <a className="brand" href="#top" aria-label="TailorResume home">
-          <span className="brand-mark" aria-hidden="true">T</span>
-          <span>tailor<span className="brand-light">resume</span></span>
-        </a>
-        <div className="topbar-actions">
-          <button className="theme-toggle" type="button" onClick={onCycleTheme} aria-label={`Theme setting: ${themeMode}. Activate to change theme`} title="Cycles between system, light, and dark themes">
-            <span aria-hidden="true">{themeMode === "dark" ? "☾" : themeMode === "light" ? "☀" : "◐"}</span>
-            <span>{themeMode === "system" ? "System" : themeMode === "light" ? "Light" : "Dark"}</span>
-          </button>
-          <button className="secondary-button" type="button" onClick={onSignOut} disabled={authBusy}>{authBusy ? "Signing out…" : "Sign out"}</button>
-        </div>
-      </header>
+      {hostedHeader}
 
       <main id="top" className="main-content hosted-main">
         <section className="intro" aria-labelledby="hosted-title">
@@ -375,69 +611,35 @@ export default function HostedWorkspace({ user, authBusy, themeMode, onSignOut, 
           <p className="hosted-help-copy">Recognized skills are extracted from the document and saved automatically. Experience bullets are read from this resume whenever you tailor it.</p>
         </section>
 
-        <section className="hosted-card" aria-labelledby="providers-title">
+        <section className="hosted-card compact-settings-card" aria-labelledby="ai-settings-title">
           <div className="panel-heading">
-            <div><span className="step-label">02 / AI PROVIDERS</span><h2 id="providers-title">Your provider keys</h2></div>
-            <span className="field-meta">Bring your own API key</span>
+            <div><span className="step-label">02 / AI ACCESS</span><h2 id="ai-settings-title">Choose how to use AI</h2></div>
+            <button className="secondary-button" type="button" onClick={() => navigateTo("/settings/ai")}>AI settings</button>
           </div>
-          <p className="hosted-help-copy">Keys are encrypted by the server before they are saved and are never returned to the browser. Saving a key checks the provider’s model catalogue; it does not send your resume or job description. OpenAI API usage is billed separately from ChatGPT subscriptions. <a href="https://platform.openai.com/api-keys" target="_blank" rel="noreferrer">Manage OpenAI API keys</a>.</p>
-          {(["anthropic", "xai", "openai"] as const).map((provider) => {
-            const connection = providerConnections.find((item) => item.provider === provider);
-            const connected = Boolean(connection);
-            const label = providerLabel(provider);
-            return (
-              <form className="hosted-provider-row" key={provider} onSubmit={(event) => void saveProvider(provider, event)}>
-                <div className="hosted-provider-heading">
-                  <div><strong>{label}</strong><span>{connection?.last_verified_at ? `Key verified ${new Date(connection.last_verified_at).toLocaleDateString()}` : connected ? "Key saved · not yet verified" : "No key saved"}</span></div>
-                  {connected && <button className="text-button hosted-remove-button" type="button" onClick={() => void removeProvider(provider)}>Remove key</button>}
-                </div>
-                <label className="visually-hidden" htmlFor={`${provider}-api-key`}>{label} API key</label>
-                <input
-                  id={`${provider}-api-key`}
-                  className="hosted-provider-input"
-                  type="password"
-                  autoComplete="new-password"
-                  value={providerKeys[provider]}
-                  onChange={(event) => setProviderKeys((current) => ({ ...current, [provider]: event.target.value }))}
-                  placeholder={connected ? "Enter a replacement key" : "Paste your API key"}
-                  minLength={20}
-                  maxLength={500}
-                />
-                <div className="hosted-provider-footer">
-                  <span className="field-meta">Provider usage is billed by {provider === "anthropic" ? "Anthropic" : provider === "xai" ? "xAI" : "OpenAI Platform"}.</span>
-                  <button className="secondary-button" type="submit" disabled={savingProvider !== null || providerKeys[provider].length < 20}>{savingProvider === provider ? "Saving…" : connected ? "Replace key" : "Save key"}</button>
-                </div>
-                {connected && <div className="hosted-model-selection">
-                  <span className="field-meta">Selected model: <strong>{connection?.selected_model ?? "Not selected"}</strong></span>
-                  {editingModel !== provider
-                    ? <button className="text-button" type="button" disabled={loadingModels !== null} onClick={() => void loadProviderModels(provider)}>{loadingModels === provider ? "Loading models…" : "Change model"}</button>
-                    : <div className="hosted-model-editor">
-                      <label className="visually-hidden" htmlFor={`${provider}-model`}>{label} model</label>
-                      <select id={`${provider}-model`} className="hosted-provider-input" value={selectedModelDraft[provider]} onChange={(event) => setSelectedModelDraft((current) => ({ ...current, [provider]: event.target.value }))}>
-                        <option value="" disabled>Choose an available model</option>
-                        {providerModels[provider].map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}
-                      </select>
-                      <div className="hosted-provider-footer">
-                        <button className="secondary-button" type="button" disabled={savingModel !== null || !selectedModelDraft[provider]} onClick={() => void saveProviderModel(provider)}>{savingModel === provider ? "Saving…" : "Save model"}</button>
-                        <button className="text-button" type="button" disabled={savingModel === provider} onClick={() => setEditingModel(null)}>Cancel</button>
-                      </div>
-                    </div>}
-                </div>}
-              </form>
-            );
-          })}
+          <p className="hosted-help-copy">
+            {platformAccess.redeemed
+              ? platformAccess.runsRemaining > 0
+                ? `TailorResume AI: ${platformAccess.runsRemaining} of ${platformAccess.runsGranted} included runs remain.`
+                : "Your included TailorResume AI runs are used. Add your own provider key to continue."
+              : "Use your own provider key, or activate an invitation for included TailorResume AI runs."}
+          </p>
         </section>
 
         <section className="hosted-card" aria-labelledby="hosted-tailor-title">
           <div className="panel-heading">
             <div><span className="step-label">03 / TAILOR A RESUME</span><h2 id="hosted-tailor-title">Match your resume to a job</h2></div>
-            <span className="field-meta">{providerLabel(activeTailoringProvider)} · saved model</span>
+            <span className="field-meta">{aiSource === "platform" ? `TailorResume AI · ${platformAccess.model ?? "shared model"}` : `${providerLabel(activeTailoringProvider)} · saved model`}</span>
           </div>
-          <p className="hosted-help-copy">The full job description and up to 12 relevant experience bullets are sent to your selected AI provider. OpenAI API requests use your OpenAI Platform billing and are separate from ChatGPT Plus. Your DOCX and experience profile stay in TailorResume. Runs and generated files are stored in your account for up to 30 days.</p>
+          <p className="hosted-help-copy">The full job description and up to 12 relevant experience bullets are sent to the selected AI provider. Your DOCX and experience profile stay in TailorResume. Runs and generated files are stored in your account for up to 30 days.</p>
           {!currentResume && <p className="hosted-empty-state">Upload a base resume above to begin.</p>}
-          {availableTailoringProviders.length === 0 && <p className="hosted-empty-state">Connect a Claude or OpenAI API key and select a model above to enable tailoring.</p>}
+          {aiSource === "user" && availableTailoringProviders.length === 0 && <p className="hosted-empty-state">{platformAccess.redeemed ? "Your included TailorResume AI runs are used. Connect your own provider key to continue." : "Connect a provider key or activate TailorResume AI access in"} <button className="inline-link-button" type="button" onClick={() => navigateTo("/settings/ai")}>AI settings</button>.</p>}
           <form className="hosted-tailoring-form" onSubmit={(event) => void submitHostedRun(event)}>
-            {availableTailoringProviders.length > 0 && <>
+            {(availableTailoringProviders.length > 0 || (platformAccess.redeemed && platformAccess.runsRemaining > 0)) && <fieldset className="ai-source-picker">
+              <legend>AI access</legend>
+              {availableTailoringProviders.length > 0 && <label><input type="radio" name="ai-source" checked={aiSource === "user"} onChange={() => { setAiSource("user"); setAiConsent(false); }} /> Use my API key</label>}
+              {platformAccess.redeemed && platformAccess.runsRemaining > 0 && <label><input type="radio" name="ai-source" checked={aiSource === "platform"} onChange={() => { setAiSource("platform"); setAiConsent(false); }} /> Use TailorResume AI ({platformAccess.runsRemaining} runs left)</label>}
+            </fieldset>}
+            {aiSource === "user" && availableTailoringProviders.length > 0 && <>
               <label htmlFor="hosted-ai-provider">AI provider</label>
               <select id="hosted-ai-provider" className="hosted-provider-input" value={activeTailoringProvider} onChange={(event) => { setTailoringProvider(event.target.value as HostedTailoringProvider); setAiConsent(false); }}>
                 {availableTailoringProviders.map((provider) => <option key={provider} value={provider}>{providerLabel(provider)}</option>)}
@@ -448,23 +650,20 @@ export default function HostedWorkspace({ user, authBusy, themeMode, onSignOut, 
             <span className="field-meta">{jobDescription.length.toLocaleString()} / 30,000 characters · Provider and model are configured above.</span>
             <label className="hosted-consent-row">
               <input type="checkbox" checked={aiConsent} onChange={(event) => setAiConsent(event.target.checked)} />
-              <span>I agree to send the job description and relevant resume experience bullets to {providerLabel(activeTailoringProvider)} for this run.</span>
+              <span>I agree to send the job description and relevant resume experience bullets to {aiSource === "platform" ? `OpenAI through TailorResume (${platformAccess.model ?? "shared model"})` : providerLabel(activeTailoringProvider)} for this run.</span>
             </label>
-            <button className="primary-button" type="submit" disabled={tailoring || !currentResume || !providerConnections.some((item) => item.provider === activeTailoringProvider && item.selected_model) || !aiConsent || !jobDescription.trim()}>{tailoring ? "Starting…" : "Tailor resume"}</button>
+            <button className="primary-button" type="submit" disabled={tailoring || !currentResume || (aiSource === "platform" ? platformAccess.runsRemaining < 1 : !providerConnections.some((item) => item.provider === activeTailoringProvider && item.selected_model)) || !aiConsent || !jobDescription.trim()}>{tailoring ? "Starting…" : "Tailor resume"}</button>
           </form>
           {hostedRun && <div className="hosted-run-status" role="status" aria-live="polite">
             <div><strong>{hostedRun.status === "queued" ? "Queued" : hostedRun.status === "running" ? "Preparing your resume…" : hostedRun.status === "succeeded" ? "Resume ready" : hostedRun.status === "failed" ? "Run failed" : hostedRun.status}</strong><span>{new Date(hostedRun.createdAt).toLocaleString()} · {hostedRun.provider === "anthropic" ? "Claude" : hostedRun.provider === "openai" ? "OpenAI API" : hostedRun.provider ?? "AI provider"}{hostedRun.model ? ` · ${hostedRun.model}` : ""}</span></div>
+            {hostedRun.status === "succeeded" && <button className="secondary-button" type="button" onClick={() => navigateTo(`/results/${encodeURIComponent(hostedRun.runId)}`)}>View result</button>}
             {(hostedRun.status === "failed" || hostedRun.status === "canceled") && hostedRun.error && <p>{hostedRun.error}</p>}
             {!(["queued", "running"].includes(hostedRun.status)) && <button className="text-button hosted-remove-button" type="button" onClick={() => void deleteHostedRun()}>Delete this run</button>}
           </div>}
         </section>
 
-        {hostedRun?.result && <section className="hosted-card hosted-run-result" aria-label="Tailoring result">
-          <ReviewPanel result={hostedRun.result} retentionCopy="This hosted result and generated file expire after 30 days. You can delete them sooner." />
-        </section>}
-
         <div className="account-notice hosted-rollout-notice" role="status">
-          Your resumes, profile, provider settings, and tailoring runs belong to this account. Hosted tailoring supports Claude and OpenAI API keys. Grok key storage is available, but Grok tailoring is not enabled yet. OpenAI API usage is billed separately from a ChatGPT plan.
+          Your resumes, profile, provider settings, and tailoring runs belong to this account. Hosted tailoring supports Claude and OpenAI. Grok key storage is available, but Grok tailoring is not enabled yet.
         </div>
       </main>
       <footer className="page-footer"><span>TAILORRESUME</span><span>Private hosted workspace</span></footer>
