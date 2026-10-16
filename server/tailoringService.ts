@@ -13,6 +13,12 @@ import type {
 } from "../shared/api";
 import { isBulletParagraph } from "../docxStructure";
 import { getChatGPTAccessToken } from "./chatgptAuth";
+import {
+  loadLocalSkillCatalog,
+  persistLocalSkillCandidates,
+  type SkillCatalogCandidate,
+  type SkillCatalogEntry,
+} from "./skillCatalog";
 
 const execFileAsync = promisify(execFile);
 const projectRoot = process.cwd();
@@ -44,6 +50,7 @@ interface ProposalReport {
   changes: TailoringChange[];
   unsupportedRequirements: string[];
   analysisWarnings?: string[];
+  skillCatalogCandidates?: SkillCatalogCandidate[];
 }
 
 interface AuditReport {
@@ -58,6 +65,7 @@ export interface TailoringRunFiles {
   resumePath: string;
   downloadName: string;
   response: TailoringRunResponse;
+  skillCatalogCandidates: SkillCatalogCandidate[];
 }
 
 export interface TailoringExecutionOptions {
@@ -65,6 +73,7 @@ export interface TailoringExecutionOptions {
   provider?: "anthropic" | "openai";
   providerApiKey?: string;
   model?: string;
+  skillCatalog?: SkillCatalogEntry[];
 }
 
 function countStatus(requirements: AuditRequirement[], status: string): number {
@@ -187,6 +196,7 @@ export async function createTailoringRun(
   const outputPath = path.join(directory, "tailored-resume.docx");
   const reportPath = path.join(directory, "report");
   const runProfilePath = options.experienceProfile ? path.join(directory, "experience-profile.json") : profilePath;
+  const runSkillDictionaryPath = path.join(directory, "skill-dictionary.json");
 
   try {
     await fs.writeFile(path.join(directory, runOwnershipMarker), runOwnershipMarkerText, { flag: "wx", mode: 0o600 });
@@ -195,6 +205,13 @@ export async function createTailoringRun(
     if (options.experienceProfile) {
       await fs.writeFile(runProfilePath, `${JSON.stringify(options.experienceProfile, null, 2)}\n`, { flag: "wx", mode: 0o600 });
     }
+    let skillCatalog: SkillCatalogEntry[];
+    try {
+      skillCatalog = options.skillCatalog ?? await loadLocalSkillCatalog();
+    } catch (error) {
+      throw new UserFacingTailoringError(error instanceof Error ? error.message : "The local skill catalog could not be loaded.");
+    }
+    await fs.writeFile(runSkillDictionaryPath, `${JSON.stringify(skillCatalog, null, 2)}\n`, { flag: "wx", mode: 0o600 });
     if (options.provider && (!options.providerApiKey || !options.model)) {
       throw new UserFacingTailoringError("The selected AI provider connection is incomplete. Update its key and model in account settings.");
     }
@@ -227,6 +244,8 @@ export async function createTailoringRun(
             TAILORRESUME_AI_PROVIDER: options.provider ?? "chatgpt",
             TAILORRESUME_AI_API_KEY: options.providerApiKey,
             TAILORRESUME_AI_MODEL: options.model,
+            TAILORRESUME_SKILL_DICTIONARY: runSkillDictionaryPath,
+            TAILORRESUME_CATALOG_MANAGED_BY_SERVER: "true",
           },
           timeout: maxProcessingTimeMs,
           maxBuffer: 5 * 1024 * 1024,
@@ -271,6 +290,7 @@ export async function createTailoringRun(
       fs.readFile(auditPath, "utf8").then((text) => JSON.parse(text) as AuditReport),
     ]);
     const issueCount = audit.preservationIssues.length + audit.formatIssues.length;
+    const skillCatalogCandidates = Array.isArray(proposal.skillCatalogCandidates) ? proposal.skillCatalogCandidates : [];
     const preview = await readResumePreview(outputPath, proposal.changes);
     const response: TailoringRunResponse = {
       runId,
@@ -303,15 +323,28 @@ export async function createTailoringRun(
       },
     };
 
+    if (!isHostedProcess()) {
+      try {
+        const saved = await persistLocalSkillCandidates(skillCatalogCandidates);
+        if (saved.pending) response.warnings.push(`${saved.pending} newly detected skill term${saved.pending === 1 ? " is" : "s are"} queued for review before future matching.`);
+      } catch {
+        response.warnings.push("New skill terms could not be saved to the local catalog and may be rediscovered next time.");
+      }
+    }
     return {
       runId,
       directory,
       resumePath: outputPath,
       downloadName: `${path.parse(originalFileName).name}-tailored.docx`,
       response,
+      skillCatalogCandidates,
     };
   } catch (error) {
     await fs.rm(directory, { recursive: true, force: true }).catch(() => undefined);
     throw error;
   }
+}
+
+function isHostedProcess(): boolean {
+  return process.env.APP_MODE === "hosted";
 }

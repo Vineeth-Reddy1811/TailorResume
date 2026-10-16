@@ -90,6 +90,41 @@ export interface ApiError {
   error: string;
 }
 
+export interface ResumeProfileSkill {
+  canonical: string;
+  aliases: string[];
+  verified: boolean;
+  userConfirmed?: boolean;
+  category?: string;
+  source?: string;
+  evidenceLines?: ResumeProfileEvidenceLine[];
+}
+
+export interface ResumeProfileEvidenceLine {
+  paragraphId: string;
+  section: string;
+  text: string;
+}
+
+export interface ResumeProfileView {
+  sourceResume: string;
+  sourceSha256: string;
+  verifiedSkills: ResumeProfileSkill[];
+  experienceLines: ResumeProfileEvidenceLine[];
+}
+
+export interface SkillCatalogReviewItem {
+  canonical: string;
+  aliases: string[];
+  category: string;
+  roleArea: string;
+  definition: string;
+  status: "pending" | "active" | "rejected";
+  confidence?: "high" | "medium" | "low";
+  reviewReason: string | null;
+  sourceCount: number;
+}
+
 export interface AuthenticatedAppUser {
   id: string;
   email: string | null;

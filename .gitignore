@@ -21,6 +21,8 @@
 /Data/input/approved-additions.json
 /Data/input/ats-approved-changes.json
 /Data/input/job-description.example.txt
+/Data/skill-catalog.learned.json
+/Data/skill-catalog.learned.json.lock
 
 # Example manifest currently contains a personal resume path and hash.
 # Remove this rule after replacing them with generic example values.

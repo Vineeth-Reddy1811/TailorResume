@@ -1,8 +1,15 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { TailoringChange, TailoringRunResponse } from "../../shared/api";
 
 type ChangeFilter = "all" | "experience" | "skills";
-type SummaryDetail = "requirements" | "evidence" | "documents";
+type SummaryDetail = "evidence" | "documents";
+
+function requirementActionLabel(action: string): string {
+  if (action === "keep") return "Already covered";
+  if (action === "rewrite") return "Change proposed";
+  if (action === "add") return "Addition proposed";
+  return "Needs review";
+}
 
 function changeCategory(change: TailoringChange): "experience" | "skills" {
   return change.matchType === "technical-skills-section-update" ? "skills" : "experience";
@@ -13,10 +20,14 @@ function changeLabel(change: TailoringChange): string {
   return change.action === "rewrite" ? "UPDATED EXPERIENCE" : "NEW EXPERIENCE";
 }
 
+function changeElementId(changeId: string): string {
+  return `change-${changeId.replace(/[^a-z0-9_-]/gi, "-")}`;
+}
+
 function ChangeCard({ change, reasons }: { change: TailoringChange; reasons: string[] }) {
   const displayReason = reasons.find((reason) => !/^Add this JD-aligned skill\b/i.test(reason));
   return (
-    <details className="change-card">
+    <details id={`change-${change.id.replace(/[^a-z0-9_-]/gi, "-")}`} className="change-card">
       <summary className="change-card-summary">
         <span className={`change-type ${changeCategory(change)}`}>{changeLabel(change)}</span>
         <span className="change-location">{change.section}{change.role ? ` · ${change.role}` : ""}</span>
@@ -47,8 +58,9 @@ function ChangeCard({ change, reasons }: { change: TailoringChange; reasons: str
 
 export default function ReviewPanel({ result, retentionCopy = "Temporary results are removed after one hour or when the local server stops." }: { result: TailoringRunResponse; retentionCopy?: string }) {
   const [filter, setFilter] = useState<ChangeFilter>("all");
+  const [pendingChangeId, setPendingChangeId] = useState<string | null>(null);
   const [summaryDetail, setSummaryDetail] = useState<SummaryDetail | null>(null);
-  const summaryButtonRefs = useRef<Record<SummaryDetail, HTMLButtonElement | null>>({ requirements: null, evidence: null, documents: null });
+  const summaryButtonRefs = useRef<Record<SummaryDetail, HTMLButtonElement | null>>({ evidence: null, documents: null });
   const requirementReasons = useMemo(
     () => new Map(result.requirements.map((item) => [item.canonical, item.reason])),
     [result.requirements],
@@ -58,10 +70,17 @@ export default function ReviewPanel({ result, retentionCopy = "Temporary results
   const unresolvedRequirements = result.requirements.filter((item) => item.action === "unsupported");
   const evidenceRequirements = result.auditRequirements.filter((item) => item.status === "experience evidence" || item.status === "user-confirmed evidence");
   const summaryDetails: Record<SummaryDetail, { title: string; eyebrow: string }> = {
-    requirements: { title: "Recognized job requirements", eyebrow: "01 / JD REQUIREMENTS" },
     evidence: { title: "Evidence in the tailored resume", eyebrow: "02 / TAILORED RESUME EVIDENCE" },
     documents: { title: "Document check details", eyebrow: "03 / DOCUMENT CHECKS" },
   };
+
+  useEffect(() => {
+    if (!pendingChangeId || !visibleChanges.some((change) => change.id === pendingChangeId)) return;
+    const target = document.getElementById(changeElementId(pendingChangeId));
+    if (target instanceof HTMLDetailsElement) target.open = true;
+    target?.scrollIntoView({ behavior: "smooth", block: "center" });
+    setPendingChangeId(null);
+  }, [filter, pendingChangeId, visibleChanges]);
 
   function toggleSummaryDetail(detail: SummaryDetail) {
     setSummaryDetail((current) => current === detail ? null : detail);
@@ -76,11 +95,45 @@ export default function ReviewPanel({ result, retentionCopy = "Temporary results
   return (
     <>
       <div className="summary-grid" aria-label="Tailoring summary">
-        <button ref={(element) => { summaryButtonRefs.current.requirements = element; }} type="button" className="summary-card summary-button" aria-expanded={summaryDetail === "requirements"} aria-controls={summaryDetail === "requirements" ? "summary-detail" : undefined} onClick={() => toggleSummaryDetail("requirements")}><span>JD requirements</span><strong>{result.counts.requirements}</strong><small>recognized · view details</small></button>
+        <div className="summary-card"><span>JD requirements</span><strong>{result.counts.requirements}</strong><small>review each requirement below</small></div>
         <button ref={(element) => { summaryButtonRefs.current.evidence = element; }} type="button" className="summary-card summary-button" aria-expanded={summaryDetail === "evidence"} aria-controls={summaryDetail === "evidence" ? "summary-detail" : undefined} onClick={() => toggleSummaryDetail("evidence")}><span>Evidence in tailored resume</span><strong>{evidenceCount}</strong><small>supported requirements · view details</small></button>
         <div className="summary-card"><span>New additions</span><strong>{result.counts.additions}</strong><small>recorded changes</small></div>
         <button ref={(element) => { summaryButtonRefs.current.documents = element; }} type="button" className={`summary-card summary-button${result.counts.documentIssues ? " summary-warning" : ""}`} aria-expanded={summaryDetail === "documents"} aria-controls={summaryDetail === "documents" ? "summary-detail" : undefined} onClick={() => toggleSummaryDetail("documents")}><span>Document checks</span><strong>{result.counts.documentIssues}</strong><small>{result.counts.documentIssues ? "needs review · view details" : "no issues found · view details"}</small></button>
       </div>
+
+      <section className="change-section requirement-review-section" id="requirement-review" aria-labelledby="requirement-review-heading">
+        <div className="section-heading">
+          <div><p className="step-label">01 / JOB MATCH</p><h2 id="requirement-review-heading">Requirements and evidence</h2></div>
+          <span className="change-count">{result.requirements.length} recognized</span>
+        </div>
+        {result.requirements.length ? (
+          <div className="requirement-review-list">
+            {result.requirements.map((item) => {
+              const audit = result.auditRequirements.find((candidate) => candidate.requirement === item.canonical);
+              const change = item.changeId ? result.changes.find((candidate) => candidate.id === item.changeId) : undefined;
+              return (
+                <details className="requirement-review-item" key={item.requirementId}>
+                  <summary>
+                    <strong>{item.canonical}</strong>
+                    <span className="requirement-review-status" data-action={item.action}>{requirementActionLabel(item.action)}</span>
+                  </summary>
+                  <div className="requirement-review-detail">
+                    {item.jobDescriptionEvidence?.length ? <div><span>JOB DESCRIPTION</span>{item.jobDescriptionEvidence.map((text, index) => <blockquote key={`jd-${index}`}>{text}</blockquote>)}</div> : null}
+                    {audit?.sourceEvidence.length ? <div><span>IN YOUR ORIGINAL RESUME</span>{audit.sourceEvidence.map((evidence) => <blockquote key={evidence.paragraphId}>{evidence.text}</blockquote>)}</div> : <p>No matching line was found in the original resume.</p>}
+                    {audit?.evidence.length ? <div><span>IN THE TAILORED RESUME</span>{audit.evidence.map((evidence) => <blockquote key={evidence.paragraphId}>{evidence.text}</blockquote>)}</div> : null}
+                    <p>{item.reason}</p>
+                    {change && <a href={`#${changeElementId(change.id)}`} onClick={(event) => {
+                      event.preventDefault();
+                      setPendingChangeId(change.id);
+                      setFilter(changeCategory(change));
+                    }}>View related change</a>}
+                  </div>
+                </details>
+              );
+            })}
+          </div>
+        ) : <div className="empty-changes">No job requirements were recognized. Review the job description and try again.</div>}
+      </section>
 
       {summaryDetail && (
         <section id="summary-detail" className="summary-details" aria-live="polite" aria-labelledby="summary-detail-heading">
@@ -88,19 +141,6 @@ export default function ReviewPanel({ result, retentionCopy = "Temporary results
             <div><p className="step-label">{summaryDetails[summaryDetail].eyebrow}</p><h2 id="summary-detail-heading">{summaryDetails[summaryDetail].title}</h2></div>
             <button className="summary-detail-close" type="button" onClick={closeSummaryDetail} aria-label="Close summary details">×</button>
           </div>
-
-          {summaryDetail === "requirements" && (
-            result.requirements.length ? <div className="summary-detail-list">
-              {result.requirements.map((item) => {
-                const audit = result.auditRequirements.find((candidate) => candidate.requirement === item.canonical);
-                return <article className="summary-detail-item" key={item.canonical}>
-                  <strong className="summary-detail-name">{item.canonical}</strong>
-                  {item.jobDescriptionEvidence?.length ? <ul className="summary-evidence-lines">{item.jobDescriptionEvidence.map((text, index) => <li key={`jd-${index}`}><span>JOB DESCRIPTION</span><blockquote>{text}</blockquote></li>)}</ul> : null}
-                  {audit?.sourceEvidence.length ? <ul className="summary-evidence-lines">{audit.sourceEvidence.map((evidence) => <li key={evidence.paragraphId}><span>{evidence.section}</span><blockquote>{evidence.text}</blockquote></li>)}</ul> : <p className="summary-detail-empty-line">No matching line found in the original resume.</p>}
-                </article>;
-              })}
-            </div> : <p className="summary-detail-empty">No job requirements were recognized.</p>
-          )}
 
           {summaryDetail === "evidence" && (
             evidenceRequirements.length ? <div className="summary-detail-list">
@@ -159,7 +199,7 @@ export default function ReviewPanel({ result, retentionCopy = "Temporary results
           <div>
             <p className="step-label">03 / TAILORED DOCUMENT</p>
             <h2 id="resume-preview-heading">Resume preview</h2>
-            <p>Review the tailored resume before downloading. Edited lines are highlighted.</p>
+            <p>Text preview only. Edited lines are highlighted; check page layout in Word before sending.</p>
           </div>
           <span className="preview-legend"><span aria-hidden="true">✦</span> Edited line</span>
         </div>

@@ -123,6 +123,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .privacy-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--success); box-shadow: 0 0 0 3px var(--success-soft); }
 
 .main-content { width: min(100% - 40px, 1040px); margin: 0 auto; flex: 1; padding: 62px 0 76px; }
+.workspace-main { width: min(100% - 40px, 900px); }
 .intro { max-width: 700px; margin-bottom: 36px; }
 .eyebrow, .step-label { margin: 0; color: var(--green); font: 500 10px/1.4 var(--mono); letter-spacing: 1.1px; }
 .eyebrow span { padding: 0 4px; color: var(--text-muted); }
@@ -323,6 +324,78 @@ h1, h2, p { margin-top: 0; }
 .account-notice { margin-top: 24px; padding: 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-raised); color: var(--text-secondary); font-size: 12px; line-height: 1.6; }
 .account-gate .error-message { margin-top: 18px; }
 .hosted-main { max-width: 900px; }
+.workspace-step-card { margin-top: 18px; padding: 25px 28px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); box-shadow: var(--panel-shadow); }
+.workspace-step-card .panel-heading { margin-bottom: 18px; }
+.workspace-step-card .panel-heading h2 { margin: 7px 0 0; font: 700 21px/1.3 Inter, ui-sans-serif, system-ui, sans-serif; letter-spacing: -.55px; }
+.workspace-tailoring-form { display: grid; gap: 11px; }
+.workspace-tailoring-form > label:not(.hosted-consent-row) { color: var(--text-primary); font-size: 12px; font-weight: 700; }
+.workspace-job-description { width: 100%; min-height: 190px; padding: 12px; resize: vertical; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-raised); color: var(--text-primary); font: 12px/1.55 Inter, ui-sans-serif, system-ui, sans-serif; }
+.workspace-job-description:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 2px; }
+.workspace-resume-status { margin-top: 12px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.resume-profile-panel { margin-top: 18px; padding: 18px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-muted); }
+.resume-profile-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; cursor: pointer; list-style: none; }
+.resume-profile-heading::-webkit-details-marker { display: none; }
+.resume-profile-heading::after { content: "+"; color: var(--text-muted); font-size: 18px; line-height: 1; }
+.resume-profile-panel[open] > .resume-profile-heading::after { content: "−"; }
+.resume-profile-heading h3 { margin: 6px 0 0; color: var(--text-primary); font-size: 15px; }
+.resume-profile-panel > .hosted-help-copy { margin: 9px 0 13px; color: var(--text-secondary); font-size: 12px; line-height: 1.55; }
+.resume-profile-skills { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; }
+.resume-profile-skill-card { min-width: 0; padding: 8px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); }
+.resume-profile-skill { display: flex; align-items: flex-start; gap: 9px; padding: 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); cursor: pointer; }
+.resume-profile-skill-card .resume-profile-skill { padding: 2px; border: 0; background: transparent; }
+.resume-profile-skill input { margin: 2px 0 0; accent-color: var(--accent); }
+.resume-profile-skill span { display: grid; gap: 3px; color: var(--text-primary); font-size: 12px; }
+.resume-profile-skill small, .resume-profile-evidence li > span { color: var(--text-muted); font-size: 10px; }
+.resume-profile-actions { display: flex; align-items: center; gap: 14px; margin-top: 14px; flex-wrap: wrap; }
+.resume-profile-evidence { color: var(--text-secondary); font-size: 11px; }
+.resume-profile-evidence summary { cursor: pointer; }
+.resume-profile-evidence ul { max-height: 260px; overflow: auto; margin: 9px 0 0; padding: 0 0 0 18px; }
+.resume-profile-evidence li { margin: 8px 0; padding-left: 3px; }
+.resume-profile-evidence li p { margin: 3px 0 0; color: var(--text-primary); font-size: 11px; line-height: 1.5; }
+.resume-skill-evidence { margin: 7px 0 0 24px; color: var(--text-muted); font-size: 9px; }
+.resume-skill-evidence summary { cursor: pointer; }
+.resume-skill-evidence blockquote { margin: 5px 0; color: var(--text-secondary); font-size: 10px; line-height: 1.45; }
+.resume-skill-evidence-empty { display: block; margin: 7px 0 0 24px; color: var(--text-muted); font-size: 9px; }
+.resume-profile-add-skill { display: grid; gap: 6px; max-width: 460px; margin-top: 15px; color: var(--text-secondary); font-size: 10px; }
+.resume-profile-add-skill > div { display: flex; gap: 8px; }
+.resume-profile-add-skill input { flex: 1; min-width: 0; padding: 9px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text-primary); font: inherit; font-size: 11px; }
+.resume-profile-custom-skills { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 9px; color: var(--text-muted); font-size: 9px; }
+.resume-profile-custom-skills > span:not(:first-child) { display: inline-flex; align-items: center; gap: 5px; padding: 4px 7px; border: 1px solid var(--accent-border); border-radius: 99px; background: var(--accent-soft); color: var(--accent-text); }
+.resume-profile-custom-skills button { padding: 0; border: 0; background: transparent; color: inherit; cursor: pointer; font-size: 13px; }
+.catalog-review { margin-top: 18px; }
+.catalog-review summary { color: var(--accent-text); font-weight: 600; cursor: pointer; }
+.catalog-review-list { display: grid; gap: 10px; margin-top: 14px; }
+.catalog-review-item { padding: 15px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.catalog-review-item h3 { margin: 0 0 4px; color: var(--text-primary); font-size: 14px; }
+.catalog-review-item p { margin: 0 0 12px; color: var(--text-secondary); font-size: 11px; line-height: 1.5; }
+.catalog-review-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.catalog-review-fields label { display: grid; gap: 5px; color: var(--text-secondary); font-size: 10px; }
+.catalog-review-fields input, .catalog-review-fields select, .catalog-review-fields textarea { width: 100%; min-width: 0; padding: 8px 9px; border: 1px solid var(--border); border-radius: 6px; color: var(--text-primary); background: var(--surface); font: inherit; font-size: 11px; }
+.catalog-review-fields textarea { min-height: 58px; grid-column: 1 / -1; resize: vertical; }
+.catalog-review-actions { display: flex; gap: 8px; margin-top: 12px; }
+.requirement-review-list { display: grid; gap: 9px; margin: 0 0 24px; }
+.requirement-review-item { padding: 14px 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.requirement-review-item summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--text-primary); cursor: pointer; list-style: none; }
+.requirement-review-item summary::-webkit-details-marker { display: none; }
+.requirement-review-status { flex: none; color: var(--text-secondary); font-size: 10px; }
+.requirement-review-status[data-action="unsupported"] { color: var(--danger-text); }
+.requirement-review-detail { padding-top: 10px; color: var(--text-secondary); font-size: 11px; line-height: 1.5; }
+.requirement-review-detail blockquote { margin: 5px 0; padding-left: 10px; border-left: 2px solid var(--border-strong); color: var(--text-primary); }
+.requirement-review-detail a { display: inline-block; margin-top: 5px; color: var(--accent-text); font-weight: 600; }
+.workspace-ai-connection, .workspace-ai-header { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+.workspace-ai-connection .chatgpt-connection-copy { flex: 1; }
+.workspace-ai-connection .chatgpt-notice { margin-top: 3px; }
+.workspace-ai-header .hosted-help-copy { margin: 0; }
+.workspace-provider-picker { display: grid; gap: 7px; max-width: 420px; margin-top: 13px; color: var(--text-primary); font-size: 12px; font-weight: 700; }
+.workspace-tailoring-form .ai-source-picker { margin: 12px 0 0; padding: 12px 14px; display: flex; flex-wrap: wrap; gap: 14px 22px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-muted); }
+.workspace-submit-row { margin-top: 9px; padding-top: 17px; display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; border-top: 1px solid var(--border); }
+.workspace-submit-row .primary-button { flex: 0 0 auto; }
+.workspace-footer-note { max-width: 650px; color: var(--text-secondary); font-size: 11px; line-height: 1.55; }
+.workspace-footer-note .process-note { margin: 0; }
+.workspace-footer-note .process-note p { margin: 0; }
+.workspace-hosted-disclosure { max-width: 650px; }
+.workspace-step-card > .hosted-help-copy:last-child { margin-bottom: 0; }
+.hosted-workspace-actions { max-width: 900px; margin: 0 auto; }
 .settings-main { max-width: 900px; }
 .hosted-results-main { max-width: 1120px; }
 .hosted-card { margin-top: 18px; padding: 25px 28px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); box-shadow: var(--panel-shadow); }
@@ -418,6 +491,7 @@ h1, h2, p { margin-top: 0; }
   .privacy-badge { font-size: 0; }
   .theme-toggle { min-height: 32px; padding: 0 8px; }
   .main-content { width: min(100% - 28px, 1040px); padding-top: 36px; }
+  .workspace-main { width: min(100% - 28px, 900px); }
   .hosted-main { width: min(100% - 28px, 900px); }
   .intro { margin-bottom: 25px; }
   .intro h1, .results-heading h1 { letter-spacing: -1.7px; }
@@ -426,6 +500,12 @@ h1, h2, p { margin-top: 0; }
   .chatgpt-connection { padding: 16px; }
   .chatgpt-connection-actions .primary-button { flex: 1; }
   .input-panel { padding: 20px 16px 17px; }
+  .workspace-step-card { padding: 20px 16px; }
+  .catalog-review-fields { grid-template-columns: 1fr; }
+  .workspace-submit-row, .workspace-ai-connection, .workspace-ai-header { align-items: stretch; flex-direction: column; }
+  .workspace-submit-row .primary-button, .workspace-ai-connection .primary-button { width: 100%; }
+  .workspace-resume-status { align-items: flex-start; flex-wrap: wrap; }
+  .workspace-provider-picker { max-width: none; }
   .panel-heading { align-items: flex-start; flex-direction: column; gap: 9px; margin-bottom: 20px; }
   .panel-status-group { width: 100%; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 5px 8px; }
   .local-note { font-size: 10px; white-space: normal; }

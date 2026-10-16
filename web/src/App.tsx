@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState, type ChangeEvent, type DragEvent, type FormEvent } from "react";
-import type { ApiError, AppSessionResponse, AuthenticatedAppUser, TailoringRunResponse } from "../../shared/api";
+import type { ApiError, AppSessionResponse, AuthenticatedAppUser, ResumeProfileView, TailoringRunResponse } from "../../shared/api";
 import HostedWorkspace from "./HostedWorkspace";
 import ReviewPanel from "./ReviewPanel";
+import TailoringWorkspace from "./TailoringWorkspace";
+import ResumeProfilePanel from "./ResumeProfilePanel";
+import SkillCatalogReview from "./SkillCatalogReview";
 import { clearLocalDraft, loadLocalDraft, localSessionRetentionMs, saveLocalDraft, subscribeToLocalDraftClear } from "./localSession";
 
 const maxResumeSize = 15 * 1024 * 1024;
-const maxJobDescriptionLength = 30_000;
 const localSessionRetentionDays = localSessionRetentionMs / (24 * 60 * 60 * 1000);
 type ThemeMode = "system" | "light" | "dark";
 type AppMode = "loading" | "local" | "hosted" | "unavailable";
@@ -26,6 +28,10 @@ export default function App() {
   const [authBusy, setAuthBusy] = useState(false);
   const [themeMode, setThemeMode] = useState<ThemeMode>(savedTheme);
   const [resume, setResume] = useState<File | null>(null);
+  const [resumeProfile, setResumeProfile] = useState<ResumeProfileView | null>(null);
+  const [profileLoading, setProfileLoading] = useState(false);
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [profileError, setProfileError] = useState("");
   const [jobDescription, setJobDescription] = useState("");
   const [isDragging, setIsDragging] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -41,6 +47,8 @@ export default function App() {
   const [chatGPTBusy, setChatGPTBusy] = useState(false);
   const [chatGPTNotice, setChatGPTNotice] = useState("");
   const fileInput = useRef<HTMLInputElement>(null);
+  const profileRequestFile = useRef<File | null>(null);
+  const profileRequestQueue = useRef<Promise<void>>(Promise.resolve());
   const draftSaveTimer = useRef<number | null>(null);
   const draftSaveVersion = useRef(0);
   const hasDraft = useRef(false);
@@ -114,6 +122,36 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (appMode !== "local" || !resume || profileRequestFile.current === resume) return;
+    let active = true;
+    profileRequestFile.current = resume;
+    setProfileLoading(true);
+    setProfileError("");
+    setResumeProfile(null);
+    const form = new FormData();
+    form.append("resume", resume);
+    profileRequestQueue.current = profileRequestQueue.current
+      .catch(() => undefined)
+      .then(async () => {
+        // Local profile extraction writes one shared profile file. Keep uploads
+        // in selection order so a slow earlier request cannot overwrite a newer
+        // resume after its UI response has been ignored.
+        if (!active) return;
+        try {
+          const response = await fetch("/api/local/profile", { method: "POST", body: form, credentials: "same-origin" });
+          const payload = await response.json() as { profile?: ResumeProfileView; error?: string };
+          if (!response.ok || !payload.profile) throw new Error(payload.error || "The resume profile could not be prepared.");
+          if (active) setResumeProfile(payload.profile);
+        } catch (requestError) {
+          if (active) setProfileError(requestError instanceof Error ? requestError.message : "The resume profile could not be prepared.");
+        } finally {
+          if (active) setProfileLoading(false);
+        }
+      });
+    return () => { active = false; };
+  }, [appMode, resume]);
+
+  useEffect(() => {
     if (appMode !== "local") return;
     const message = new URLSearchParams(window.location.search).get("chatgpt");
     if (message === "connected") setChatGPTNotice("ChatGPT is connected and plan usage is enabled.");
@@ -177,7 +215,9 @@ export default function App() {
     restoredDraft.current = { resume: null, jobDescription: "" };
     currentDraft.current = { resume: null, jobDescription: "" };
     draftEdited.current = false;
+    profileRequestFile.current = null;
     setResume(null);
+    setResumeProfile(null);
     setJobDescription("");
     setDraftLoaded(true);
     setDraftStorageReady(true);
@@ -268,7 +308,36 @@ export default function App() {
     setError("");
     currentDraft.current = { resume: file, jobDescription };
     draftEdited.current = true;
+    profileRequestFile.current = null;
     setResume(file);
+  }
+
+  async function saveResumeProfile(skills: Array<{ canonical: string; confirmed: boolean }>): Promise<void> {
+    setProfileSaving(true);
+    setProfileError("");
+    try {
+      const response = await fetch("/api/local/profile", {
+        method: "PUT",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ skills }),
+      });
+      const payload = await response.json() as { profile?: ResumeProfileView; error?: string };
+      if (!response.ok) throw new Error(payload.error || "The resume profile could not be saved.");
+      if (payload.profile) setResumeProfile((current) => ({
+        ...payload.profile!,
+        experienceLines: current?.experienceLines ?? [],
+        verifiedSkills: payload.profile!.verifiedSkills.map((skill) => ({
+          ...skill,
+          evidenceLines: current?.verifiedSkills.find((candidate) => candidate.canonical === skill.canonical)?.evidenceLines ?? [],
+        })),
+      }));
+    } catch (requestError) {
+      setProfileError(requestError instanceof Error ? requestError.message : "The resume profile could not be saved.");
+      throw requestError;
+    } finally {
+      setProfileSaving(false);
+    }
   }
 
   function updateJobDescription(value: string) {
@@ -361,6 +430,8 @@ export default function App() {
       currentDraft.current = { resume: null, jobDescription: "" };
       draftEdited.current = false;
       setResume(null);
+      setResumeProfile(null);
+      profileRequestFile.current = null;
       setJobDescription("");
       setError("");
       setSessionWarning("");
@@ -450,44 +521,17 @@ export default function App() {
         </div>
       </header>
 
-      <main id="top" className="main-content">
+      <main id="top" className="main-content workspace-main">
         {!result ? (
           <>
-            <section className="intro" aria-labelledby="page-title">
-              <p className="eyebrow">RESUME WORKSPACE <span>·</span> OPENAI-ASSISTED</p>
-              <h1 id="page-title">Make your experience<br className="desktop-break" /> speak to the role.</h1>
-              <p className="intro-copy">Add a resume and job description. Review every suggested addition, then download your tailored copy.</p>
-            </section>
-
-            <section className="chatgpt-connection" aria-label="ChatGPT connection">
-              <div className="chatgpt-connection-copy">
-                <span className="step-label">AI CONNECTION</span>
-                <strong>{chatGPTConnected ? "ChatGPT plan connected" : "Connect your ChatGPT plan"}</strong>
-                <span>{chatGPTConnected ? (chatGPTAccount || "Plan usage is enabled for this local app.") : "Authorize ChatGPT plan usage. No API key or separate API billing setup is used."}</span>
-              </div>
-              <div className="chatgpt-connection-actions">
-                {chatGPTConnected && <a className="text-button" href="https://chatgpt.com/settings/usage" target="_blank" rel="noreferrer">Manage usage</a>}
-                {chatGPTConnected
-                  ? <button className="secondary-button" type="button" disabled={chatGPTBusy} onClick={disconnectChatGPT}>Disconnect</button>
-                  : <button className="primary-button" type="button" disabled={chatGPTBusy} onClick={connectChatGPT}>{chatGPTBusy ? "Connecting…" : "Continue with ChatGPT"}</button>}
-              </div>
-              {chatGPTNotice && <p className="chatgpt-notice" role="status">{chatGPTNotice}</p>}
-            </section>
-
-            <form className="input-panel" onSubmit={onSubmit}>
-              <div className="panel-heading">
-                <div>
-                  <span className="step-label">01 / INPUT</span>
-                  <h2>Start with the essentials</h2>
-                </div>
-                <div className="panel-status-group">
-                  <span className={`local-note${draftStatus === "save-error" || draftStatus === "restore-error" ? " local-note-error" : draftStatus === "conflict" ? " local-note-conflict" : ""}`} aria-live="polite"><span aria-hidden="true">●</span>{draftStatusLabel}</span>
-                  {draftLoaded && ((resume || jobDescription) || draftStatus === "restore-error") && <button className="text-button clear-session-button" type="button" onClick={clearSession}>Clear saved session</button>}
-                </div>
-              </div>
-
-              <div className="form-grid">
-                <section className="field-group" aria-labelledby="resume-label">
+            <TailoringWorkspace
+              eyebrow="RESUME WORKSPACE · OPENAI-ASSISTED"
+              title="Make your experience speak to the role."
+              description="See each job requirement, the resume evidence behind it, and every proposed change before you download a separate tailored copy."
+              notice={sessionWarning && <div className="error-message session-warning" role="status"><span aria-hidden="true">!</span>{sessionWarning}</div>}
+              error={error}
+              resumeContent={(
+                <>
                   <div className="field-title-row">
                     <label id="resume-label" className="field-label" htmlFor="resume-file">Your resume</label>
                     <span className="field-meta">DOCX · up to 15 MB</span>
@@ -511,41 +555,44 @@ export default function App() {
                     <div className="drop-copy">
                       {resume ? <><strong>{resume.name}</strong><span>{(resume.size / 1024).toFixed(0)} KB · ready to tailor</span></> : <><strong>Drop your resume here</strong><span>or <label className="browse-link" htmlFor="resume-file">browse files</label></span></>}
                     </div>
-                    {resume && <button className="text-button remove-file" type="button" disabled={!draftLoaded || isSubmitting} onClick={() => { currentDraft.current = { resume: null, jobDescription }; draftEdited.current = true; setResume(null); if (fileInput.current) fileInput.current.value = ""; }}>Remove</button>}
+                    {resume && <button className="text-button remove-file" type="button" disabled={!draftLoaded || isSubmitting} onClick={() => { currentDraft.current = { resume: null, jobDescription }; draftEdited.current = true; profileRequestFile.current = null; setResume(null); setResumeProfile(null); if (fileInput.current) fileInput.current.value = ""; }}>Remove</button>}
                   </div>
-                </section>
-
-                <section className="field-group" aria-labelledby="jd-label">
-                  <div className="field-title-row">
-                    <label id="jd-label" className="field-label" htmlFor="job-description">Job description</label>
-                    <span className="field-meta">Paste the full description</span>
+                  <div className="workspace-resume-status">
+                    <span className={`local-note${draftStatus === "save-error" || draftStatus === "restore-error" ? " local-note-error" : draftStatus === "conflict" ? " local-note-conflict" : ""}`} aria-live="polite"><span aria-hidden="true">●</span>{draftStatusLabel}</span>
+                    {draftLoaded && ((resume || jobDescription) || draftStatus === "restore-error") && <button className="text-button clear-session-button" type="button" onClick={clearSession}>Clear saved session</button>}
                   </div>
-                  <textarea
-                    id="job-description"
-                    className="jd-input"
-                    disabled={!draftLoaded || isSubmitting}
-                    value={jobDescription}
-                    maxLength={maxJobDescriptionLength}
-                    onChange={(event) => updateJobDescription(event.currentTarget.value)}
-                    placeholder="Paste the job description here…"
-                    rows={8}
-                    required
-                  />
-                  <div className="textarea-footer"><span>Include the responsibilities and qualifications.</span><span>{jobDescription.length.toLocaleString()} / {maxJobDescriptionLength.toLocaleString()}</span></div>
-                </section>
-              </div>
-
-              {error && <div className="error-message" role="alert"><span aria-hidden="true">!</span>{error}</div>}
-
-              <div className="form-footer">
-                <p>Your original resume is never changed. ChatGPT drafts missing experience points; the app applies the change plan locally.</p>
-                <button className="primary-button" type="submit" disabled={!draftLoaded || !chatGPTConnected || isSubmitting || !resume || !jobDescription.trim()}>
-                  {isSubmitting ? <><span className="button-spinner" aria-hidden="true" />Tailoring resume…</> : <>Tailor my resume <span aria-hidden="true">↗</span></>}
-                </button>
-              </div>
-            </form>
-
-            <div className="process-note"><span>AI AND YOUR DATA</span><p>Each run sends the full job description (up to 30,000 characters) and up to 12 relevant resume experience bullets to OpenAI in one ChatGPT plan request. ChatGPT identifies required technical skills and drafts missing experience points; the app checks each skill against job-description excerpts. The sign-in tokens stay on this computer and are never stored in browser storage. Newly found technical skills are saved to your local profile; broad competencies go under experience instead of Skills.</p></div>
+                </>
+              )}
+              profileContent={<ResumeProfilePanel profile={resumeProfile} loading={profileLoading} saving={profileSaving} error={profileError} onSave={saveResumeProfile} />}
+              catalogReviewContent={<SkillCatalogReview />}
+              aiAccessContent={(
+                <div className="workspace-ai-connection">
+                  <div className="chatgpt-connection-copy">
+                    <strong>{chatGPTConnected ? "ChatGPT plan connected" : "Connect your ChatGPT plan"}</strong>
+                    <span>{chatGPTConnected ? (chatGPTAccount || "Plan usage is enabled for this local app.") : "Authorize ChatGPT plan usage. No API key or separate API billing setup is used."}</span>
+                    {chatGPTNotice && <p className="chatgpt-notice" role="status">{chatGPTNotice}</p>}
+                  </div>
+                  <div className="chatgpt-connection-actions">
+                    {chatGPTConnected && <a className="text-button" href="https://chatgpt.com/settings/usage" target="_blank" rel="noreferrer">Manage usage</a>}
+                    {chatGPTConnected
+                      ? <button className="secondary-button" type="button" disabled={chatGPTBusy} onClick={disconnectChatGPT}>Disconnect</button>
+                      : <button className="primary-button" type="button" disabled={chatGPTBusy} onClick={connectChatGPT}>{chatGPTBusy ? "Connecting…" : "Continue with ChatGPT"}</button>}
+                  </div>
+                </div>
+              )}
+              jobDescription={jobDescription}
+              onJobDescriptionChange={updateJobDescription}
+              onSubmit={onSubmit}
+              submitDisabled={!draftLoaded || !chatGPTConnected || !resume || !resumeProfile || profileLoading}
+              inputDisabled={!draftLoaded || profileLoading}
+              submitting={isSubmitting}
+              submitLabel="Tailor my resume"
+              submittingLabel="Tailoring resume…"
+              jobDescriptionHint="Include responsibilities and qualifications."
+              footerNote={(
+                <div className="process-note"><span>AI AND YOUR DATA</span><p>Each run sends the full job description (up to 30,000 characters) and up to 12 relevant resume experience bullets to OpenAI in one ChatGPT plan request. ChatGPT identifies job-related skills and drafts missing experience points; TailorResume checks evidence, records each change, and blocks some duplicate or unsupported drafts. Sign-in tokens stay on this computer and are never stored in browser storage. New vocabulary is stored separately from your personal experience profile. Your original resume is never changed. Review the result yourself; the app cannot predict an employer’s ATS ranking.</p></div>
+              )}
+            />
           </>
         ) : (
           <section id="results" className="results-section" tabIndex={-1} aria-labelledby="results-title">

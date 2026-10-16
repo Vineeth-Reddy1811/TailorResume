@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
-import type { AuthenticatedAppUser, HostedAccountResponse, HostedProviderConnection, HostedResumeRecord, HostedTailoringRunState } from "../../shared/api";
+import type { AuthenticatedAppUser, HostedAccountResponse, HostedProviderConnection, HostedResumeRecord, HostedTailoringRunState, ResumeProfileView } from "../../shared/api";
 import ReviewPanel from "./ReviewPanel";
+import TailoringWorkspace from "./TailoringWorkspace";
+import ResumeProfilePanel from "./ResumeProfilePanel";
+import SkillCatalogReview from "./SkillCatalogReview";
 
 type HostedProvider = HostedProviderConnection["provider"];
 type HostedTailoringProvider = Extract<HostedProvider, "anthropic" | "openai">;
@@ -35,6 +38,8 @@ function messageFrom(payload: unknown, fallback: string): string {
 export default function HostedWorkspace({ user, authBusy, themeMode, onSignOut, onCycleTheme }: HostedWorkspaceProps) {
   const [route, setRoute] = useState<HostedRoute>(routeFromLocation);
   const [account, setAccount] = useState<HostedAccountResponse | null>(null);
+  const [resumeProfile, setResumeProfile] = useState<ResumeProfileView | null>(null);
+  const [profileSaving, setProfileSaving] = useState(false);
   const [providerConnections, setProviderConnections] = useState<HostedProviderConnection[]>([]);
   const [providerModels, setProviderModels] = useState<Record<HostedProvider, Array<{ id: string; name: string }>>>({ anthropic: [], xai: [], openai: [] });
   const [selectedModelDraft, setSelectedModelDraft] = useState<Record<HostedProvider, string>>({ anthropic: "", xai: "", openai: "" });
@@ -78,6 +83,39 @@ export default function HostedWorkspace({ user, authBusy, themeMode, onSignOut, 
     setProviderConnections(Array.isArray(payload.connections) ? payload.connections : []);
   }
 
+  async function refreshResumeProfile(): Promise<void> {
+    const response = await fetch("/api/account/profile", { cache: "no-store", credentials: "same-origin" });
+    if (response.status === 404) {
+      setResumeProfile(null);
+      return;
+    }
+    const payload = await response.json() as { profile?: ResumeProfileView; error?: string };
+    if (!response.ok || !payload.profile) throw new Error(messageFrom(payload, "Your resume profile could not be loaded."));
+    setResumeProfile(payload.profile);
+  }
+
+  async function saveResumeProfile(skills: Array<{ canonical: string; confirmed: boolean }>): Promise<void> {
+    setProfileSaving(true);
+    setAccountError("");
+    try {
+      const response = await fetch("/api/account/profile", {
+        method: "PUT",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ skills }),
+      });
+      const payload = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(messageFrom(payload, "Your resume profile could not be saved."));
+      await refreshResumeProfile();
+      setAccountNotice("Your resume skill confirmations were saved to your private profile.");
+    } catch (error) {
+      setAccountError(error instanceof Error ? error.message : "Your resume profile could not be saved.");
+      throw error;
+    } finally {
+      setProfileSaving(false);
+    }
+  }
+
   async function refreshPlatformAccess(): Promise<void> {
     const response = await fetch("/api/account/platform-ai-access", { cache: "no-store", credentials: "same-origin" });
     const payload = await response.json() as { enabled?: boolean; redeemed?: boolean; runsGranted?: number; runsRemaining?: number; model?: string; error?: string };
@@ -112,6 +150,7 @@ export default function HostedWorkspace({ user, authBusy, themeMode, onSignOut, 
         if (!response.ok) throw new Error(messageFrom(payload, "AI provider connections could not be loaded."));
         if (active) setProviderConnections(Array.isArray(payload.connections) ? payload.connections : []);
       }),
+      refreshResumeProfile(),
     ])
       .catch((error: unknown) => {
         if (active) setAccountError(error instanceof Error ? error.message : "Your cloud account data could not be loaded.");
@@ -388,7 +427,7 @@ export default function HostedWorkspace({ user, authBusy, themeMode, onSignOut, 
       const response = await fetch("/api/account/resume", { method: "POST", credentials: "same-origin", body: form });
       const payload = await response.json() as { error?: string; cleanupWarning?: boolean; detectedSkillCount?: number };
       if (!response.ok) throw new Error(messageFrom(payload, "The resume could not be uploaded."));
-      await refreshAccount();
+      await Promise.all([refreshAccount(), refreshResumeProfile()]);
       setAccountNotice(payload.cleanupWarning
         ? `The new base resume is saved and ${payload.detectedSkillCount ?? 0} recognized skills were added to your profile. An older resume copy could not be cleaned up yet.`
         : `Your base resume is saved securely. ${payload.detectedSkillCount ?? 0} recognized skills were added to your profile.`);
@@ -578,90 +617,90 @@ export default function HostedWorkspace({ user, authBusy, themeMode, onSignOut, 
       {hostedHeader}
 
       <main id="top" className="main-content hosted-main">
-        <section className="intro" aria-labelledby="hosted-title">
-          <p className="eyebrow">RESUME WORKSPACE <span>·</span> HOSTED ACCOUNT</p>
-          <h1 id="hosted-title">Your private resume workspace.</h1>
-          <p className="intro-copy">Signed in as {user.displayName || user.email || "your Google account"}. Upload your resume once; TailorResume reads its experience and keeps a private skill profile for future tailoring.</p>
-        </section>
-
-        {accountError && <div className="error-message hosted-feedback" role="alert"><span aria-hidden="true">!</span>{accountError}</div>}
-        {accountNotice && <div className="account-notice hosted-feedback" role="status">{accountNotice}</div>}
-
-        <section className="hosted-card" aria-labelledby="base-resume-title">
-          <div className="panel-heading">
-            <div><span className="step-label">01 / BASE RESUME</span><h2 id="base-resume-title">Your resume</h2></div>
-            <span className="field-meta">DOCX · up to 15 MB</span>
-          </div>
-          {loading ? <p className="intro-copy">Loading your saved resume…</p> : currentResume ? (
-            <div className="hosted-resume-row">
-              <div className="hosted-resume-copy">
-                <strong>{currentResume.original_file_name}</strong>
-                <span>{(Number(currentResume.file_size_bytes) / 1024).toFixed(0)} KB · saved {new Date(currentResume.created_at).toLocaleDateString()}</span>
+        <TailoringWorkspace
+          eyebrow="RESUME WORKSPACE · HOSTED ACCOUNT"
+          title="Your private resume workspace."
+          description={`Signed in as ${user.displayName || user.email || "your Google account"}. Keep a base resume profile, then review how each job requirement maps to your evidence and proposed changes.`}
+          notice={accountNotice && <div className="account-notice hosted-feedback" role="status">{accountNotice}</div>}
+          error={accountError}
+          resumeContent={(
+            <>
+              <span className="field-meta">DOCX · up to 15 MB</span>
+              {loading ? <p className="intro-copy">Loading your saved resume…</p> : currentResume ? (
+                <div className="hosted-resume-row">
+                  <div className="hosted-resume-copy">
+                    <strong>{currentResume.original_file_name}</strong>
+                    <span>{(Number(currentResume.file_size_bytes) / 1024).toFixed(0)} KB · saved {new Date(currentResume.created_at).toLocaleDateString()}</span>
+                  </div>
+                  <div className="hosted-resume-actions">
+                    <button className="secondary-button" type="button" onClick={() => void downloadResume(currentResume)}>Download</button>
+                    <button className="text-button hosted-remove-button" type="button" onClick={() => void removeResume(currentResume)}>Remove</button>
+                  </div>
+                </div>
+              ) : <p className="hosted-empty-state">No base resume saved yet. Upload your DOCX to keep it with this account.</p>}
+              <label className="primary-button hosted-upload-button">
+                {uploadingResume ? "Saving resume…" : currentResume ? "Replace base resume" : "Upload base resume"}
+                <input className="visually-hidden" type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" disabled={uploadingResume} onChange={(event) => void uploadResume(event)} />
+              </label>
+              <p className="hosted-help-copy">TailorResume detects candidate skills and shows experience lines from your resume. Confirm only the skills that accurately describe your experience.</p>
+            </>
+          )}
+          profileContent={<ResumeProfilePanel profile={resumeProfile} loading={loading && Boolean(currentResume)} saving={profileSaving} error="" onSave={saveResumeProfile} />}
+          catalogReviewContent={<SkillCatalogReview />}
+          aiAccessContent={(
+            <>
+              <div className="workspace-ai-header">
+                <p className="hosted-help-copy">
+                  {platformAccess.redeemed
+                    ? platformAccess.runsRemaining > 0
+                      ? `TailorResume AI: ${platformAccess.runsRemaining} of ${platformAccess.runsGranted} included runs remain.`
+                      : "Your included TailorResume AI runs are used. Add your own provider key to continue."
+                    : "Use your own provider key, or activate an invitation for included TailorResume AI runs."}
+                </p>
+                <button className="secondary-button" type="button" onClick={() => navigateTo("/settings/ai")}>AI settings</button>
               </div>
-              <div className="hosted-resume-actions">
-                <button className="secondary-button" type="button" onClick={() => void downloadResume(currentResume)}>Download</button>
-                <button className="text-button hosted-remove-button" type="button" onClick={() => void removeResume(currentResume)}>Remove</button>
-              </div>
-            </div>
-          ) : <p className="hosted-empty-state">No base resume saved yet. Upload your DOCX to keep it with this account.</p>}
-          <label className="primary-button hosted-upload-button">
-            {uploadingResume ? "Saving resume…" : currentResume ? "Replace base resume" : "Upload base resume"}
-            <input className="visually-hidden" type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" disabled={uploadingResume} onChange={(event) => void uploadResume(event)} />
-          </label>
-          <p className="hosted-help-copy">Recognized skills are extracted from the document and saved automatically. Experience bullets are read from this resume whenever you tailor it.</p>
-        </section>
-
-        <section className="hosted-card compact-settings-card" aria-labelledby="ai-settings-title">
-          <div className="panel-heading">
-            <div><span className="step-label">02 / AI ACCESS</span><h2 id="ai-settings-title">Choose how to use AI</h2></div>
-            <button className="secondary-button" type="button" onClick={() => navigateTo("/settings/ai")}>AI settings</button>
-          </div>
-          <p className="hosted-help-copy">
-            {platformAccess.redeemed
-              ? platformAccess.runsRemaining > 0
-                ? `TailorResume AI: ${platformAccess.runsRemaining} of ${platformAccess.runsGranted} included runs remain.`
-                : "Your included TailorResume AI runs are used. Add your own provider key to continue."
-              : "Use your own provider key, or activate an invitation for included TailorResume AI runs."}
-          </p>
-        </section>
-
-        <section className="hosted-card" aria-labelledby="hosted-tailor-title">
-          <div className="panel-heading">
-            <div><span className="step-label">03 / TAILOR A RESUME</span><h2 id="hosted-tailor-title">Match your resume to a job</h2></div>
-            <span className="field-meta">{aiSource === "platform" ? `TailorResume AI · ${platformAccess.model ?? "shared model"}` : `${providerLabel(activeTailoringProvider)} · saved model`}</span>
-          </div>
-          <p className="hosted-help-copy">The full job description and up to 12 relevant experience bullets are sent to the selected AI provider. Your DOCX and experience profile stay in TailorResume. Runs and generated files are stored in your account for up to 30 days.</p>
-          {!currentResume && <p className="hosted-empty-state">Upload a base resume above to begin.</p>}
-          {aiSource === "user" && availableTailoringProviders.length === 0 && <p className="hosted-empty-state">{platformAccess.redeemed ? "Your included TailorResume AI runs are used. Connect your own provider key to continue." : "Connect a provider key or activate TailorResume AI access in"} <button className="inline-link-button" type="button" onClick={() => navigateTo("/settings/ai")}>AI settings</button>.</p>}
-          <form className="hosted-tailoring-form" onSubmit={(event) => void submitHostedRun(event)}>
-            {(availableTailoringProviders.length > 0 || (platformAccess.redeemed && platformAccess.runsRemaining > 0)) && <fieldset className="ai-source-picker">
-              <legend>AI access</legend>
-              {availableTailoringProviders.length > 0 && <label><input type="radio" name="ai-source" checked={aiSource === "user"} onChange={() => { setAiSource("user"); setAiConsent(false); }} /> Use my API key</label>}
-              {platformAccess.redeemed && platformAccess.runsRemaining > 0 && <label><input type="radio" name="ai-source" checked={aiSource === "platform"} onChange={() => { setAiSource("platform"); setAiConsent(false); }} /> Use TailorResume AI ({platformAccess.runsRemaining} runs left)</label>}
-            </fieldset>}
-            {aiSource === "user" && availableTailoringProviders.length > 0 && <>
-              <label htmlFor="hosted-ai-provider">AI provider</label>
-              <select id="hosted-ai-provider" className="hosted-provider-input" value={activeTailoringProvider} onChange={(event) => { setTailoringProvider(event.target.value as HostedTailoringProvider); setAiConsent(false); }}>
-                {availableTailoringProviders.map((provider) => <option key={provider} value={provider}>{providerLabel(provider)}</option>)}
-              </select>
-            </>}
-            <label htmlFor="hosted-job-description">Job description</label>
-            <textarea id="hosted-job-description" className="hosted-job-description" value={jobDescription} maxLength={30_000} onChange={(event) => setJobDescription(event.target.value)} placeholder="Paste the full job description" required />
-            <span className="field-meta">{jobDescription.length.toLocaleString()} / 30,000 characters · Provider and model are configured above.</span>
+              <span className="field-meta">{aiSource === "platform" ? `TailorResume AI · ${platformAccess.model ?? "shared model"}` : `${providerLabel(activeTailoringProvider)} · ${providerConnections.find((item) => item.provider === activeTailoringProvider)?.selected_model ?? "model not selected"}`}</span>
+              {(availableTailoringProviders.length > 0 || (platformAccess.redeemed && platformAccess.runsRemaining > 0)) && <fieldset className="ai-source-picker">
+                <legend>AI access</legend>
+                {availableTailoringProviders.length > 0 && <label><input type="radio" name="ai-source" checked={aiSource === "user"} onChange={() => { setAiSource("user"); setAiConsent(false); }} /> Use my API key</label>}
+                {platformAccess.redeemed && platformAccess.runsRemaining > 0 && <label><input type="radio" name="ai-source" checked={aiSource === "platform"} onChange={() => { setAiSource("platform"); setAiConsent(false); }} /> Use TailorResume AI ({platformAccess.runsRemaining} runs left)</label>}
+              </fieldset>}
+              {aiSource === "user" && availableTailoringProviders.length > 0 && <label className="workspace-provider-picker" htmlFor="hosted-ai-provider">
+                <span>AI provider</span>
+                <select id="hosted-ai-provider" className="hosted-provider-input" value={activeTailoringProvider} onChange={(event) => { setTailoringProvider(event.target.value as HostedTailoringProvider); setAiConsent(false); }}>
+                  {availableTailoringProviders.map((provider) => <option key={provider} value={provider}>{providerLabel(provider)}</option>)}
+                </select>
+              </label>}
+              {aiSource === "user" && availableTailoringProviders.length === 0 && <p className="hosted-empty-state">{platformAccess.redeemed ? "Your included TailorResume AI runs are used. Connect your own provider key to continue." : "Connect a provider key or activate TailorResume AI access in"} <button className="inline-link-button" type="button" onClick={() => navigateTo("/settings/ai")}>AI settings</button>.</p>}
+            </>
+          )}
+          jobDescription={jobDescription}
+          onJobDescriptionChange={setJobDescription}
+          onSubmit={(event) => void submitHostedRun(event)}
+          submitDisabled={!currentResume || (aiSource === "platform" ? platformAccess.runsRemaining < 1 : !providerConnections.some((item) => item.provider === activeTailoringProvider && item.selected_model)) || !aiConsent}
+          inputDisabled={loading || !currentResume}
+          submitting={tailoring}
+          submitLabel="Tailor resume"
+          submittingLabel="Starting…"
+          jobDescriptionHint="Provider and model are configured above."
+          consent={(
             <label className="hosted-consent-row">
               <input type="checkbox" checked={aiConsent} onChange={(event) => setAiConsent(event.target.checked)} />
               <span>I agree to send the job description and relevant resume experience bullets to {aiSource === "platform" ? `OpenAI through TailorResume (${platformAccess.model ?? "shared model"})` : providerLabel(activeTailoringProvider)} for this run.</span>
             </label>
-            <button className="primary-button" type="submit" disabled={tailoring || !currentResume || (aiSource === "platform" ? platformAccess.runsRemaining < 1 : !providerConnections.some((item) => item.provider === activeTailoringProvider && item.selected_model)) || !aiConsent || !jobDescription.trim()}>{tailoring ? "Starting…" : "Tailor resume"}</button>
-          </form>
-          {hostedRun && <div className="hosted-run-status" role="status" aria-live="polite">
-            <div><strong>{hostedRun.status === "queued" ? "Queued" : hostedRun.status === "running" ? "Preparing your resume…" : hostedRun.status === "succeeded" ? "Resume ready" : hostedRun.status === "failed" ? "Run failed" : hostedRun.status}</strong><span>{new Date(hostedRun.createdAt).toLocaleString()} · {hostedRun.provider === "anthropic" ? "Claude" : hostedRun.provider === "openai" ? "OpenAI API" : hostedRun.provider ?? "AI provider"}{hostedRun.model ? ` · ${hostedRun.model}` : ""}</span></div>
-            {hostedRun.status === "succeeded" && <button className="secondary-button" type="button" onClick={() => navigateTo(`/results/${encodeURIComponent(hostedRun.runId)}`)}>View result</button>}
-            {(hostedRun.status === "failed" || hostedRun.status === "canceled") && hostedRun.error && <p>{hostedRun.error}</p>}
-            {!(["queued", "running"].includes(hostedRun.status)) && <button className="text-button hosted-remove-button" type="button" onClick={() => void deleteHostedRun()}>Delete this run</button>}
-          </div>}
-        </section>
-
+          )}
+          footerNote={(
+            <div className="workspace-hosted-disclosure">
+              Every run uses AI. The full job description and up to 12 relevant experience bullets are sent to the selected provider. TailorResume records requirement evidence and checks proposed changes, but cannot guarantee complete coverage or predict ATS ranking. Your DOCX and personal profile stay in your account; runs and generated files are stored for up to 30 days. Shared vocabulary is separate from your experience profile.
+            </div>
+          )}
+        />
+        {hostedRun && <div className="hosted-run-status" role="status" aria-live="polite">
+          <div><strong>{hostedRun.status === "queued" ? "Queued" : hostedRun.status === "running" ? "Preparing your resume…" : hostedRun.status === "succeeded" ? "Resume ready" : hostedRun.status === "failed" ? "Run failed" : hostedRun.status}</strong><span>{new Date(hostedRun.createdAt).toLocaleString()} · {hostedRun.provider === "anthropic" ? "Claude" : hostedRun.provider === "openai" ? "OpenAI API" : hostedRun.provider ?? "AI provider"}{hostedRun.model ? ` · ${hostedRun.model}` : ""}</span></div>
+          {hostedRun.status === "succeeded" && <button className="secondary-button" type="button" onClick={() => navigateTo(`/results/${encodeURIComponent(hostedRun.runId)}`)}>View result</button>}
+          {(hostedRun.status === "failed" || hostedRun.status === "canceled") && hostedRun.error && <p>{hostedRun.error}</p>}
+          {!(["queued", "running"].includes(hostedRun.status)) && <button className="text-button hosted-remove-button" type="button" onClick={() => void deleteHostedRun()}>Delete this run</button>}
+        </div>}
         <div className="account-notice hosted-rollout-notice" role="status">
           Your resumes, profile, provider settings, and tailoring runs belong to this account. Hosted tailoring supports Claude and OpenAI. Grok key storage is available, but Grok tailoring is not enabled yet.
         </div>

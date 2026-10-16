@@ -3,6 +3,7 @@ import { createTailoringRun, UserFacingTailoringError, type TailoringExecutionOp
 import { decryptProviderCredential } from "./providerCredentials";
 import { getSupabaseAdminClient } from "./supabaseAuth";
 import type { TailoringRunResponse } from "../shared/api";
+import { loadHostedSkillCatalog, persistHostedSkillCandidates } from "./skillCatalog";
 
 const hostedOutputLimitBytes = 15 * 1024 * 1024;
 const hostedOutputFolder = "resume-files";
@@ -19,40 +20,6 @@ function publicFailure(error: unknown): string {
   if (error instanceof Error && /^Claude (?:rate limited|tailoring request failed)/.test(error.message)) return error.message;
   if (error instanceof Error && /^OpenAI API (?:key was rejected|prepaid credits|rate limited|encountered|tailoring request failed|did not|returned)/.test(error.message)) return error.message;
   return "Resume processing could not be completed. Check the saved resume and AI provider connection, then retry.";
-}
-
-function mergeLearnedSkills(baseValue: unknown, currentValue: unknown): Record<string, unknown> | null {
-  if (!baseValue || typeof baseValue !== "object" || Array.isArray(baseValue) ||
-      !currentValue || typeof currentValue !== "object" || Array.isArray(currentValue)) return null;
-  const base = baseValue as Record<string, unknown>;
-  const current = currentValue as Record<string, unknown>;
-  const baseSkills = Array.isArray(base.verifiedSkills) ? base.verifiedSkills : [];
-  const learned = Array.isArray(current.verifiedSkills) ? current.verifiedSkills : [];
-  const mergedSkills = Array.isArray(base.verifiedSkills) ? [...baseSkills] : [];
-  for (const rawSkill of learned) {
-    if (!rawSkill || typeof rawSkill !== "object" || Array.isArray(rawSkill)) continue;
-    const skill = rawSkill as Record<string, unknown>;
-    if (typeof skill.canonical !== "string" || !skill.canonical.trim()) continue;
-    const canonical = skill.canonical.trim().toLowerCase();
-    const existingIndex = mergedSkills.findIndex((entry) => entry && typeof entry === "object" &&
-      !Array.isArray(entry) && typeof (entry as Record<string, unknown>).canonical === "string" &&
-      ((entry as Record<string, unknown>).canonical as string).trim().toLowerCase() === canonical);
-    if (existingIndex < 0) {
-      mergedSkills.push(skill);
-      continue;
-    }
-    const existing = mergedSkills[existingIndex] as Record<string, unknown>;
-    const aliases = [existing.canonical, ...(Array.isArray(existing.aliases) ? existing.aliases : []), ...(Array.isArray(skill.aliases) ? skill.aliases : [])]
-      .filter((alias): alias is string => typeof alias === "string" && Boolean(alias.trim()));
-    mergedSkills[existingIndex] = {
-      ...existing,
-      aliases: [...new Set(aliases)],
-      verified: true,
-      userConfirmed: true,
-      source: typeof skill.source === "string" ? skill.source : existing.source,
-    };
-  }
-  return { ...base, verifiedSkills: mergedSkills };
 }
 
 async function processRun(run: ClaimedRun): Promise<void> {
@@ -120,11 +87,18 @@ async function processRun(run: ClaimedRun): Promise<void> {
     if (download.error || !download.data) throw new UserFacingTailoringError("Your saved base resume could not be opened. Replace it in the resume section and retry.");
     const resumeBytes = Buffer.from(await download.data.arrayBuffer());
     const profileData = profileResult.data.profile_data as Record<string, unknown>;
+    let skillCatalog;
+    try {
+      skillCatalog = await loadHostedSkillCatalog(admin);
+    } catch (error) {
+      throw new UserFacingTailoringError(error instanceof Error ? error.message : "The shared skill catalog is unavailable. Apply the latest Supabase migration, then retry.");
+    }
     const options: TailoringExecutionOptions = {
       experienceProfile: profileData,
       provider,
       providerApiKey: credential,
       model: runRow.model,
+      skillCatalog,
     };
     const tailored = await createTailoringRun(resumeBytes, resumeResult.data.original_file_name, runRow.job_description, options);
     temporaryDirectory = tailored.directory;
@@ -140,33 +114,11 @@ async function processRun(run: ClaimedRun): Promise<void> {
     });
     if (uploadResult.error) throw new Error("Tailored resume could not be saved to private storage.");
 
-    const completedProfileText = await fs.readFile(`${temporaryDirectory}/experience-profile.json`, "utf8").catch(() => "");
-    if (completedProfileText) {
-      try {
-        const completedProfile = JSON.parse(completedProfileText) as unknown;
-        const latestProfile = await admin.from("experience_profiles")
-          .select("profile_data, updated_at")
-          .eq("user_id", run.user_id)
-          .maybeSingle();
-        if (!latestProfile.error && latestProfile.data) {
-          const merged = mergeLearnedSkills(latestProfile.data.profile_data, completedProfile);
-          if (merged) {
-            const savedProfile = await admin.from("experience_profiles")
-              .update({ profile_data: merged })
-              .eq("user_id", run.user_id)
-              .eq("updated_at", latestProfile.data.updated_at)
-              .select("user_id")
-              .maybeSingle();
-            if (savedProfile.error || !savedProfile.data) {
-              tailored.response.warnings.push("Newly detected skills were not saved because your resume profile changed during this run. They may be detected again on a later run.");
-            }
-          }
-        } else {
-          tailored.response.warnings.push("Newly detected skills could not be saved to your account profile. They may be detected again on a later run.");
-        }
-      } catch {
-        tailored.response.warnings.push("Newly detected skills could not be saved to your account profile. They may be detected again on a later run.");
-      }
+    try {
+      const saved = await persistHostedSkillCandidates(admin, tailored.skillCatalogCandidates);
+      if (saved.pending) tailored.response.warnings.push(`${saved.pending} newly detected skill term${saved.pending === 1 ? " is" : "s are"} queued for review before future matching.`);
+    } catch {
+      tailored.response.warnings.push("New skill terms could not be saved to the shared catalog and may be rediscovered next time.");
     }
 
     const savedRun = await admin.from("tailoring_runs")

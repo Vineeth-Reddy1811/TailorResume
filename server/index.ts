@@ -5,7 +5,7 @@ import { inflateRawSync } from "zlib";
 import { promises as fs, readFileSync } from "fs";
 import * as os from "os";
 import * as path from "path";
-import type { HostedTailoringRunState, TailoringRunResponse } from "../shared/api";
+import type { HostedTailoringRunState, ResumeProfileEvidenceLine, ResumeProfileView, TailoringRunResponse } from "../shared/api";
 import {
   chatGPTCallbackPath,
   completeChatGPTSignIn,
@@ -34,6 +34,12 @@ import {
 } from "./supabaseAuth";
 import { decryptProviderCredential, encryptProviderCredential } from "./providerCredentials";
 import { cleanExpiredHostedTailoring, queueHostedTailoring, recoverAndStartHostedTailoring } from "./hostedTailoring";
+import {
+  listHostedSkillCatalogReviewItems,
+  listLocalSkillCatalogReviewItems,
+  updateHostedSkillCatalogReviewItem,
+  updateLocalSkillCatalogReviewItem,
+} from "./skillCatalog";
 
 const host = process.env.HOST ?? (process.env.RENDER ? "0.0.0.0" : "127.0.0.1");
 const port = Number(process.env.PORT ?? process.env.WEB_PORT ?? 4170);
@@ -111,9 +117,9 @@ function requireLocalBrowser(request: Request, response: Response, next: NextFun
   }
   const origin = request.get("origin");
   const requestHost = request.hostname;
+  const safeLocalRead = request.method === "GET" && request.get("sec-fetch-site") === "same-origin";
   if (
-    !origin
-    || !allowedOrigins.has(origin)
+    (!origin ? !safeLocalRead : !allowedOrigins.has(origin))
     || !["127.0.0.1", "localhost"].includes(requestHost)
   ) {
     response.status(403).json({ error: "This local app only accepts requests from its webpage." });
@@ -136,6 +142,7 @@ async function requireHostedUser(request: Request, response: Response, next: Nex
     }
     response.locals.accountSupabase = supabase;
     response.locals.accountUserId = data.user.id;
+    response.locals.accountUserEmail = data.user.email ?? null;
     next();
   } catch {
     response.status(503).json({ error: "Cloud account storage is not available. Please try again later." });
@@ -148,6 +155,10 @@ function accountSupabase(response: Response): ReturnType<typeof getSupabaseReque
 
 function accountUserId(response: Response): string {
   return response.locals.accountUserId as string;
+}
+
+function accountUserEmail(response: Response): string | null {
+  return typeof response.locals.accountUserEmail === "string" ? response.locals.accountUserEmail : null;
 }
 
 type HostedProvider = "anthropic" | "xai" | "openai";
@@ -496,13 +507,110 @@ function extractVerifiedSkills(resumeText: string): Array<Record<string, unknown
     found.set(key, {
       canonical: item.canonical,
       aliases,
-      verified: true,
-      userConfirmed: true,
+      verified: false,
+      userConfirmed: false,
       ...(typeof item.category === "string" ? { category: item.category } : {}),
-      source: "Detected in uploaded resume",
+      source: "Detected in uploaded resume; awaiting user confirmation",
     });
   }
   return [...found.values()];
+}
+
+function resumeEvidenceLines(documentXml: string): ResumeProfileEvidenceLine[] {
+  const headingAliases: Record<string, string> = {
+    EXPERIENCE: "Professional Experience",
+    "PROFESSIONAL EXPERIENCE": "Professional Experience",
+    "WORK EXPERIENCE": "Professional Experience",
+    PROJECTS: "Projects",
+    "PERSONAL PROJECTS": "Projects",
+    SKILLS: "Skills",
+    "TECHNICAL SKILLS": "Skills",
+    "TECHNICAL KNOWLEDGE": "Skills",
+    SUMMARY: "Summary",
+    EDUCATION: "Education",
+    CERTIFICATIONS: "Certifications",
+  };
+  let section = "Header";
+  return (documentXml.match(/<(?:\w+:)?p\b[\s\S]*?<\/(?:\w+:)?p>/g) ?? []).flatMap((paragraph, index) => {
+    const text = [...paragraph.matchAll(/<(?:\w+:)?t\b[^>]*>([\s\S]*?)<\/(?:\w+:)?t>/g)]
+      .map((match) => decodeXmlText(match[1])).join("").replace(/\s+/g, " ").trim();
+    if (!text) return [];
+    const heading = headingAliases[text.replace(/[:：]+$/, "").trim().toUpperCase()];
+    if (heading) {
+      section = heading;
+      return [];
+    }
+    return [{ paragraphId: `p-${String(index + 1).padStart(4, "0")}`, section, text }];
+  }).slice(0, 150);
+}
+
+function resumeProfileView(profile: Record<string, unknown>, documentXml: string): ResumeProfileView {
+  const sourceResume = typeof profile.sourceResume === "string" ? profile.sourceResume : "Base resume";
+  const sourceSha256 = typeof profile.sourceSha256 === "string" ? profile.sourceSha256 : "";
+  const resumeLines = resumeEvidenceLines(documentXml);
+  const verifiedSkills = Array.isArray(profile.verifiedSkills) ? profile.verifiedSkills.flatMap((item) => {
+    if (!isRecord(item) || typeof item.canonical !== "string") return [];
+    const aliases = Array.isArray(item.aliases) ? item.aliases.filter((alias): alias is string => typeof alias === "string") : [item.canonical];
+    const evidenceLines = resumeLines.filter((line) => {
+      const normalizedLine = ` ${normalizeSkill(line.text)} `;
+      return aliases.some((alias) => {
+        const normalizedAlias = normalizeSkill(alias);
+        return normalizedAlias.length > 1 && normalizedLine.includes(` ${normalizedAlias} `);
+      });
+    }).slice(0, 5);
+    return [{
+      canonical: item.canonical,
+      aliases,
+      verified: item.verified === true && item.userConfirmed === true,
+      userConfirmed: item.userConfirmed === true,
+      ...(typeof item.category === "string" ? { category: item.category } : {}),
+      ...(typeof item.source === "string" ? { source: item.source } : {}),
+      evidenceLines,
+    }];
+  }) : [];
+  return {
+    sourceResume,
+    sourceSha256,
+    verifiedSkills,
+    experienceLines: resumeLines.filter((line) => line.section === "Professional Experience" || line.section === "Projects"),
+  };
+}
+
+const localExperienceProfilePath = path.resolve(process.cwd(), "Data/input/experience-profile.json");
+
+function applyResumeSkillConfirmations(profile: Record<string, unknown>, value: unknown): Record<string, unknown> | null {
+  if (!Array.isArray(value) || value.length > 1000) return null;
+  const existing = Array.isArray(profile.verifiedSkills) ? profile.verifiedSkills.filter(isRecord) : [];
+  const byCanonical = new Map(existing.flatMap((skill) => typeof skill.canonical === "string" ? [[normalizeSkill(skill.canonical), skill] as const] : []));
+  const seen = new Set<string>();
+  const skills: Array<Record<string, unknown>> = [];
+  for (const item of value) {
+    if (!isRecord(item) || !isText(item.canonical, 200) || typeof item.confirmed !== "boolean") return null;
+    const key = normalizeSkill(item.canonical);
+    const skill = byCanonical.get(key);
+    if (seen.has(key)) return null;
+    seen.add(key);
+    if (!skill) {
+      if (!item.confirmed) return null;
+      skills.push({
+        canonical: item.canonical.trim(),
+        aliases: [item.canonical.trim()],
+        verified: true,
+        userConfirmed: true,
+        category: "Other Professional Skills",
+        source: "User-confirmed from base resume profile",
+      });
+      continue;
+    }
+    skills.push({
+      ...skill,
+      verified: item.confirmed,
+      userConfirmed: item.confirmed,
+      source: item.confirmed ? "User-confirmed from base resume profile" : "Detected in uploaded resume; awaiting user confirmation",
+    });
+  }
+  if ([...byCanonical.keys()].some((key) => !seen.has(key))) return null;
+  return { ...profile, verifiedSkills: skills };
 }
 
 function lookupRun(runId: string | undefined): StoredRun | undefined {
@@ -572,6 +680,83 @@ app.get("/api/auth/session", async (request, response) => {
     response.json({ mode: "hosted", authenticated: true, user });
   } catch {
     response.status(503).json({ mode: "hosted", authenticated: false, error: "Hosted sign-in is not configured. Please try again later." });
+  }
+});
+
+app.post("/api/local/profile", requireLocalBrowser, upload.single("resume"), async (request, response) => {
+  const file = request.file;
+  if (!file) {
+    response.status(400).json({ error: "Choose a DOCX resume to build its profile." });
+    return;
+  }
+  const documentXml = extractDocxDocumentXml(file.buffer);
+  if (!documentXml) {
+    response.status(400).json({ error: "The uploaded file is not a valid DOCX resume." });
+    return;
+  }
+  try {
+    const sourceSha256 = createHash("sha256").update(file.buffer).digest("hex");
+    const previousText = await fs.readFile(localExperienceProfilePath, "utf8").catch(() => "");
+    let previous: Record<string, unknown> | null = null;
+    if (previousText) {
+      const parsed: unknown = JSON.parse(previousText);
+      if (isExperienceProfile(parsed)) previous = parsed;
+    }
+    const sameResume = previous?.sourceSha256 === sourceSha256;
+    const detected = extractVerifiedSkills(resumeTextFromDocumentXml(documentXml));
+    const skills = new Map<string, Record<string, unknown>>();
+    if (previous && Array.isArray(previous.verifiedSkills)) {
+      for (const item of previous.verifiedSkills.filter(isRecord)) {
+        if (typeof item.canonical !== "string") continue;
+        const confirmed = item.userConfirmed === true && !/^Detected in uploaded resume/i.test(String(item.source ?? ""));
+        skills.set(normalizeSkill(item.canonical), sameResume ? { ...item, verified: confirmed, userConfirmed: confirmed } : {
+          ...item,
+          verified: confirmed,
+          userConfirmed: confirmed,
+        });
+      }
+    }
+    for (const item of detected) {
+      if (!isRecord(item) || typeof item.canonical !== "string") continue;
+      const key = normalizeSkill(item.canonical);
+      const old = skills.get(key);
+      skills.set(key, old?.userConfirmed === true ? old : { ...item, verified: false, userConfirmed: false });
+    }
+    const profile: Record<string, unknown> = {
+      sourceResume: path.basename(file.originalname).slice(0, 255),
+      sourceSha256,
+      facts: sameResume && Array.isArray(previous?.facts) ? previous.facts : [],
+      verifiedSkills: [...skills.values()],
+    };
+    await fs.mkdir(path.dirname(localExperienceProfilePath), { recursive: true });
+    const tempPath = `${localExperienceProfilePath}.${process.pid}.tmp`;
+    await fs.writeFile(tempPath, `${JSON.stringify(profile, null, 2)}\n`, { mode: 0o600 });
+    await fs.rename(tempPath, localExperienceProfilePath);
+    response.json({ profile: resumeProfileView(profile, documentXml) });
+  } catch (error) {
+    console.error("Could not prepare the local resume profile:", error instanceof Error ? error.message : "unknown error");
+    response.status(503).json({ error: "Resume profile could not be prepared. Please retry." });
+  }
+});
+
+app.put("/api/local/profile", requireLocalBrowser, async (request, response) => {
+  try {
+    const raw = JSON.parse(await fs.readFile(localExperienceProfilePath, "utf8")) as unknown;
+    if (!isExperienceProfile(raw)) {
+      response.status(409).json({ error: "The saved profile is unavailable. Re-select your base resume to rebuild it." });
+      return;
+    }
+    const profile = applyResumeSkillConfirmations(raw, request.body?.skills);
+    if (!profile || !isExperienceProfile(profile)) {
+      response.status(400).json({ error: "The skill confirmation list is invalid or out of date. Refresh the resume profile and retry." });
+      return;
+    }
+    const tempPath = `${localExperienceProfilePath}.${process.pid}.tmp`;
+    await fs.writeFile(tempPath, `${JSON.stringify(profile, null, 2)}\n`, { mode: 0o600 });
+    await fs.rename(tempPath, localExperienceProfilePath);
+    response.json({ profile: resumeProfileView(profile, "") });
+  } catch {
+    response.status(503).json({ error: "The local resume profile could not be saved." });
   }
 });
 
@@ -649,6 +834,119 @@ app.get("/api/account", requireHostedUser, async (_request, response) => {
     });
   } catch {
     response.status(503).json({ error: "Your cloud account data could not be loaded. Please try again." });
+  }
+});
+
+app.get("/api/account/profile", requireHostedUser, async (_request, response) => {
+  const supabase = accountSupabase(response);
+  const userId = accountUserId(response);
+  try {
+    const [profileResult, resumeResult] = await Promise.all([
+      supabase.from("experience_profiles").select("profile_data").eq("user_id", userId).maybeSingle(),
+      supabase.from("resumes").select("object_key, original_file_name").eq("user_id", userId).eq("is_default", true).is("deleted_at", null).maybeSingle(),
+    ]);
+    if (profileResult.error || !profileResult.data || !isExperienceProfile(profileResult.data.profile_data) || resumeResult.error || !resumeResult.data) {
+      response.status(404).json({ error: "Upload a base resume to build your profile." });
+      return;
+    }
+    const download = await supabase.storage.from("resume-files").download(resumeResult.data.object_key);
+    if (download.error || !download.data) {
+      response.status(503).json({ error: "Your base resume could not be read to show its evidence." });
+      return;
+    }
+    const documentXml = extractDocxDocumentXml(Buffer.from(await download.data.arrayBuffer()));
+    if (!documentXml) {
+      response.status(503).json({ error: "Your base resume could not be read to show its evidence." });
+      return;
+    }
+    response.json({ profile: resumeProfileView({ ...profileResult.data.profile_data, sourceResume: resumeResult.data.original_file_name }, documentXml) });
+  } catch {
+    response.status(503).json({ error: "Your resume profile could not be loaded." });
+  }
+});
+
+app.put("/api/account/profile", requireHostedUser, requireHostedOrigin, async (request, response) => {
+  const supabase = accountSupabase(response);
+  const userId = accountUserId(response);
+  try {
+    const existing = await supabase.from("experience_profiles").select("profile_data").eq("user_id", userId).maybeSingle();
+    if (existing.error || !existing.data || !isExperienceProfile(existing.data.profile_data)) {
+      response.status(404).json({ error: "Upload a base resume before editing its profile." });
+      return;
+    }
+    const profile = applyResumeSkillConfirmations(existing.data.profile_data, request.body?.skills);
+    if (!profile || !isExperienceProfile(profile)) {
+      response.status(400).json({ error: "The skill confirmation list is invalid or out of date. Refresh the profile and retry." });
+      return;
+    }
+    const saved = await supabase.from("experience_profiles").upsert({ user_id: userId, profile_data: profile }, { onConflict: "user_id" });
+    if (saved.error) {
+      response.status(503).json({ error: "Your resume profile could not be saved." });
+      return;
+    }
+    response.json({ saved: true });
+  } catch {
+    response.status(503).json({ error: "Your resume profile could not be saved." });
+  }
+});
+
+function catalogAdminConfigured(response: Response): boolean {
+  const configuredEmail = process.env.TAILORRESUME_CATALOG_ADMIN_EMAIL?.trim().toLowerCase();
+  return Boolean(configuredEmail && configuredEmail === accountUserEmail(response)?.trim().toLowerCase());
+}
+
+app.get("/api/skill-catalog/review", (request, response, next) => {
+  if (isHostedMode()) return requireHostedUser(request, response, next);
+  return requireLocalBrowser(request, response, next);
+}, async (_request, response) => {
+  if (isHostedMode() && !catalogAdminConfigured(response)) {
+    response.json({ canManage: false, items: [] });
+    return;
+  }
+  try {
+    const items = isHostedMode()
+      ? await listHostedSkillCatalogReviewItems(getSupabaseAdminClient())
+      : await listLocalSkillCatalogReviewItems();
+    response.json({ canManage: true, items });
+  } catch (error) {
+    response.status(503).json({ error: error instanceof Error ? error.message : "The skill review queue could not be loaded." });
+  }
+});
+
+app.put("/api/skill-catalog/review/:canonical", (request, response, next) => {
+  if (isHostedMode()) return requireHostedUser(request, response, (error) => {
+    if (error) return next(error);
+    if (!catalogAdminConfigured(response)) {
+      response.status(403).json({ error: "Only the catalog owner can review shared vocabulary." });
+      return;
+    }
+    return requireHostedOrigin(request, response, next);
+  });
+  return requireLocalBrowser(request, response, next);
+}, async (request, response) => {
+  const body = request.body;
+  if (!isRecord(body) || !Array.isArray(body.aliases) || body.aliases.length > 30 || body.aliases.some((alias) => !isText(alias, 100)) ||
+      !isText(body.category, 80) || !isText(body.roleArea, 80) || !isText(body.definition, 240) ||
+      (body.status !== "active" && body.status !== "rejected")) {
+    response.status(400).json({ error: "The catalog review details are invalid." });
+    return;
+  }
+  const update = {
+    aliases: body.aliases as string[],
+    category: body.category,
+    roleArea: body.roleArea as import("./skillCatalog").SkillRoleArea,
+    definition: body.definition,
+    status: body.status as "active" | "rejected",
+  };
+  try {
+    if (isHostedMode()) {
+      await updateHostedSkillCatalogReviewItem(getSupabaseAdminClient(), request.params.canonical, update);
+    } else {
+      await updateLocalSkillCatalogReviewItem(request.params.canonical, update);
+    }
+    response.json({ saved: true });
+  } catch (error) {
+    response.status(409).json({ error: error instanceof Error ? error.message : "The catalog entry could not be updated." });
   }
 });
 
@@ -1149,7 +1447,15 @@ app.post("/api/account/resume", requireHostedUser, requireHostedOrigin, requireR
         ...(Array.isArray(previous?.aliases) ? previous.aliases.filter((alias): alias is string => typeof alias === "string") : []),
         ...(Array.isArray(skill.aliases) ? skill.aliases.filter((alias): alias is string => typeof alias === "string") : []),
       ]);
-      mergedSkills.set(key, { ...previous, ...skill, aliases: [...aliases] });
+      const confirmed = previous?.userConfirmed === true && !/^Detected in uploaded resume/i.test(String(previous.source ?? ""));
+      mergedSkills.set(key, {
+        ...skill,
+        ...previous,
+        aliases: [...aliases],
+        verified: confirmed,
+        userConfirmed: confirmed,
+        source: confirmed ? previous?.source : "Detected in uploaded resume; awaiting user confirmation",
+      });
     }
     profileData = {
       sourceResume: originalFileName,

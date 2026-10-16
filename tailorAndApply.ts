@@ -68,14 +68,13 @@ async function main(): Promise<void> {
     "--approved-additions", manifest,
     "--output", args.reportDirectory,
   ]);
-  const proposal = JSON.parse(fs.readFileSync(path.join(args.reportDirectory, "tailoring-proposal.json"), "utf8")) as {
-    learnedSkillRecords?: unknown;
-  };
-  if (!Array.isArray(proposal.learnedSkillRecords)) {
-    throw new Error("The tailoring proposal did not contain a valid pending skill-memory update.");
+  if (process.env.APP_MODE !== "hosted" && process.env.TAILORRESUME_CATALOG_MANAGED_BY_SERVER !== "true") {
+    const proposal = JSON.parse(fs.readFileSync(path.join(args.reportDirectory, "tailoring-proposal.json"), "utf8")) as {
+      skillCatalogCandidates?: unknown;
+    };
+    const { persistLocalSkillCandidates } = await import("./server/skillCatalog");
+    await persistLocalSkillCandidates(Array.isArray(proposal.skillCatalogCandidates) ? proposal.skillCatalogCandidates : []);
   }
-  const { persistLearnedSkills } = await import("./tailorResume");
-  persistLearnedSkills(args.experienceProfile, proposal.learnedSkillRecords as Parameters<typeof persistLearnedSkills>[1]);
   console.log(`Tailored resume: ${args.output}`);
   console.log(`Change record and audit: ${args.reportDirectory}`);
 }

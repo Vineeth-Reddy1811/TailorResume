@@ -3,7 +3,7 @@ services:
     name: tailorresume
     runtime: node
     plan: free
-    buildCommand: npm ci --include=dev && npm run web:build && npm run server:build
+    buildCommand: npm ci --include=dev && npm run web:check
     startCommand: node build/server/index.js
     healthCheckPath: /api/health
     envVars:
@@ -30,4 +30,6 @@ services:
       - key: TAILORRESUME_PLATFORM_AI_MODEL
         sync: false
       - key: TAILORRESUME_INITIAL_AI_ACCESS_CODE
+        sync: false
+      - key: TAILORRESUME_CATALOG_ADMIN_EMAIL
         sync: false
