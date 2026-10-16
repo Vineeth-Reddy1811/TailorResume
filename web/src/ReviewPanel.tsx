@@ -101,11 +101,12 @@ export default function ReviewPanel({ result, retentionCopy = "Temporary results
         <button ref={(element) => { summaryButtonRefs.current.documents = element; }} type="button" className={`summary-card summary-button${result.counts.documentIssues ? " summary-warning" : ""}`} aria-expanded={summaryDetail === "documents"} aria-controls={summaryDetail === "documents" ? "summary-detail" : undefined} onClick={() => toggleSummaryDetail("documents")}><span>Document checks</span><strong>{result.counts.documentIssues}</strong><small>{result.counts.documentIssues ? "needs review · view details" : "no issues found · view details"}</small></button>
       </div>
 
-      <section className="change-section requirement-review-section" id="requirement-review" aria-labelledby="requirement-review-heading">
-        <div className="section-heading">
+      <details className="change-section requirement-review-section" id="requirement-review">
+        <summary className="section-heading requirement-section-summary">
           <div><p className="step-label">01 / JOB MATCH</p><h2 id="requirement-review-heading">Requirements and evidence</h2></div>
-          <span className="change-count">{result.requirements.length} recognized</span>
-        </div>
+          <span className="change-count">{result.requirements.length} {result.requirements.length === 1 ? "requirement" : "requirements"}</span>
+        </summary>
+        <div className="requirement-review-content">
         {result.requirements.length ? (
           <div className="requirement-review-list">
             {result.requirements.map((item) => {
@@ -133,7 +134,8 @@ export default function ReviewPanel({ result, retentionCopy = "Temporary results
             })}
           </div>
         ) : <div className="empty-changes">No job requirements were recognized. Review the job description and try again.</div>}
-      </section>
+        </div>
+      </details>
 
       {summaryDetail && (
         <section id="summary-detail" className="summary-details" aria-live="polite" aria-labelledby="summary-detail-heading">

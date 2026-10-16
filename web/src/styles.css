@@ -218,6 +218,14 @@ h1, h2, p { margin-top: 0; }
 .change-section { padding: 24px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
 .section-heading { margin-bottom: 20px; }
 .change-count { color: var(--text-muted); font: 400 11px/1 var(--mono); }
+.change-section.requirement-review-section { padding: 0; }
+.requirement-section-summary { margin: 0; padding: 24px; cursor: pointer; list-style: none; }
+.requirement-section-summary::-webkit-details-marker { display: none; }
+.requirement-section-summary::after { content: "+"; margin-left: 14px; color: var(--text-muted); font-size: 18px; line-height: 1; }
+.requirement-review-section[open] > .requirement-section-summary::after { content: "−"; }
+.requirement-section-summary h2 { margin-bottom: 0; }
+.requirement-review-content { padding: 0 24px 24px; }
+.requirement-review-content .requirement-review-list { margin-bottom: 0; }
 .change-toolbar { min-height: 47px; padding: 7px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
 .filter-tabs { display: flex; align-items: center; gap: 4px; }
 .filter-tab { min-height: 30px; padding: 0 11px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--text-secondary); font-size: 11px; cursor: pointer; }
@@ -429,11 +437,6 @@ label.ai-access-option { cursor: pointer; }
 .hosted-job-description:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 2px; }
 .hosted-consent-row { display: flex; align-items: flex-start; gap: 9px; color: var(--text-secondary); font-size: 11px; line-height: 1.5; }
 .hosted-consent-row input { flex: 0 0 auto; margin: 2px 0 0; accent-color: var(--accent); }
-.hosted-run-status { margin-top: 15px; padding: 12px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-muted); }
-.hosted-run-status > div { display: grid; gap: 4px; }
-.hosted-run-status strong { color: var(--text-primary); font-size: 12px; }
-.hosted-run-status span, .hosted-run-status p { color: var(--text-secondary); font-size: 10px; overflow-wrap: anywhere; }
-.hosted-run-status p { margin: 0; }
 .hosted-run-result { padding: 0; overflow: hidden; }
 .hosted-run-result .resume-preview-panel { margin-top: 22px; }
 .compact-settings-card { padding-top: 20px; padding-bottom: 20px; }
@@ -519,6 +522,8 @@ label.ai-access-option { cursor: pointer; }
   .summary-card { min-height: 93px; padding: 13px; }
   .summary-card strong { font-size: 24px; }
   .change-section { padding: 17px 12px; }
+  .requirement-section-summary { padding: 17px 12px; }
+  .requirement-review-content { padding: 0 12px 17px; }
   .change-toolbar { align-items: flex-start; flex-direction: column; gap: 7px; padding: 9px 0; }
   .filter-tabs { width: 100%; }
   .filter-tab { flex: 1; padding: 0 5px; }

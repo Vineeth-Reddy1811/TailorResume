@@ -188,6 +188,16 @@ export default function HostedWorkspace({ user, authBusy, themeMode, onSignOut, 
   }, [hostedRun?.status, hostedRun?.runId, route.page]);
 
   useEffect(() => {
+    if (hostedRun && ["failed", "canceled", "expired"].includes(hostedRun.status)) {
+      console.log("[TailorResume] Hosted tailoring run did not complete", {
+        runId: hostedRun.runId,
+        status: hostedRun.status,
+        error: hostedRun.error || "No run error was provided.",
+      });
+    }
+  }, [hostedRun?.status, hostedRun?.runId, hostedRun?.error]);
+
+  useEffect(() => {
     if (!hostedRun || !["queued", "running"].includes(hostedRun.status)) return;
     let active = true;
     let timer = 0;
@@ -198,7 +208,10 @@ export default function HostedWorkspace({ user, authBusy, themeMode, onSignOut, 
           if (!response.ok) throw new Error(messageFrom(payload, "The tailoring run could not be checked."));
           if (active && payload.run) setHostedRun(payload.run);
       } catch (error) {
-        if (active) setAccountError(error instanceof Error ? error.message : "The tailoring run could not be checked.");
+        if (active) console.log("[TailorResume] Could not check hosted tailoring run", {
+          runId: hostedRun.runId,
+          error: error instanceof Error ? error.message : "Unknown polling error.",
+        });
       } finally {
         if (active) timer = window.setTimeout(() => void poll(), 2000);
       }
@@ -391,7 +404,9 @@ export default function HostedWorkspace({ user, authBusy, themeMode, onSignOut, 
       }
       setAccountNotice("Tailoring started. You can keep this page open while the result is prepared.");
     } catch (error) {
-      setAccountError(error instanceof Error ? error.message : "The tailoring run could not be started.");
+      console.log("[TailorResume] Could not start hosted tailoring run", {
+        error: error instanceof Error ? error.message : "Unknown run-start error.",
+      });
     } finally {
       setTailoring(false);
     }
@@ -595,7 +610,7 @@ export default function HostedWorkspace({ user, authBusy, themeMode, onSignOut, 
           {!run && !accountError && <section className="hosted-card result-loading" role="status">Loading this tailoring run…</section>}
           {!run && accountError && <section className="hosted-card" role="alert"><h2>Result unavailable.</h2><p className="intro-copy">Check that you are signed in to the account that created this run, or return to your workspace.</p><button className="primary-button" type="button" onClick={() => navigateTo("/")}>Back to workspace</button></section>}
           {run && ["queued", "running"].includes(run.status) && <section className="hosted-card result-loading" role="status">{run.status === "queued" ? "Your resume is queued…" : "Your resume is being prepared…"}</section>}
-          {run && ["failed", "canceled", "expired"].includes(run.status) && <section className="hosted-card" role="alert"><h2>Tailoring did not finish.</h2><p className="intro-copy">{run.error || "Return to the workspace and try again."}</p><button className="primary-button" type="button" onClick={() => navigateTo("/")}>Back to workspace</button></section>}
+          {run && ["failed", "canceled", "expired"].includes(run.status) && <section className="hosted-card"><h2>Tailoring did not finish.</h2><p className="intro-copy">Return to your workspace to try again.</p><button className="primary-button" type="button" onClick={() => navigateTo("/")}>Back to workspace</button></section>}
           {run?.result && <>
             <div className="results-actions"><button className="text-button hosted-remove-button" type="button" onClick={() => void deleteHostedRun()}>Delete this run</button></div>
             <section className="hosted-card hosted-run-result" aria-label="Tailoring result">
@@ -721,12 +736,6 @@ export default function HostedWorkspace({ user, authBusy, themeMode, onSignOut, 
             </div>
           )}
         />
-        {hostedRun && <div className="hosted-run-status" role="status" aria-live="polite">
-          <div><strong>{hostedRun.status === "queued" ? "Queued" : hostedRun.status === "running" ? "Preparing your resume…" : hostedRun.status === "succeeded" ? "Resume ready" : hostedRun.status === "failed" ? "Run failed" : hostedRun.status}</strong><span>{new Date(hostedRun.createdAt).toLocaleString()} · {hostedRun.provider === "anthropic" ? "Claude" : hostedRun.provider === "openai" ? "OpenAI API" : hostedRun.provider ?? "AI provider"}{hostedRun.model ? ` · ${hostedRun.model}` : ""}</span></div>
-          {hostedRun.status === "succeeded" && <button className="secondary-button" type="button" onClick={() => navigateTo(`/results/${encodeURIComponent(hostedRun.runId)}`)}>View result</button>}
-          {(hostedRun.status === "failed" || hostedRun.status === "canceled") && hostedRun.error && <p>{hostedRun.error}</p>}
-          {!(["queued", "running"].includes(hostedRun.status)) && <button className="text-button hosted-remove-button" type="button" onClick={() => void deleteHostedRun()}>Delete this run</button>}
-        </div>}
         <div className="account-notice hosted-rollout-notice" role="status">
           Your resumes, profile, provider settings, and tailoring runs belong to this account. Hosted tailoring supports Claude and OpenAI. Grok key storage is available, but Grok tailoring is not enabled yet.
         </div>
