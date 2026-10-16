@@ -181,7 +181,13 @@ export async function loadHostedSkillCatalog(admin: SupabaseClient): Promise<Ski
   if (result.error) throw new Error("Shared skill catalog is unavailable. Apply the latest Supabase migration, then retry.");
   let rows = (result.data ?? []) as StoredSkillCatalogRow[];
   const present = new Set(rows.map((row) => row.normalized_key));
-  const missingSeed = seed.filter((entry) => !present.has(normalizeCatalogTerm(entry.canonical)));
+  // PostgreSQL requires normalized_key to be at least two characters. Keep
+  // valid one-character technologies (for example, R) in the in-memory seed
+  // catalog, but don't try to persist them in the shared table.
+  const missingSeed = seed.filter((entry) => {
+    const key = normalizeCatalogTerm(entry.canonical);
+    return key.length >= 2 && !present.has(key);
+  });
   if (missingSeed.length) {
     const seeded = missingSeed.map((entry) => ({
       canonical: entry.canonical,
@@ -195,7 +201,10 @@ export async function loadHostedSkillCatalog(admin: SupabaseClient): Promise<Ski
       source_count: 1,
     }));
     const inserted = await admin.from("skill_catalog").upsert(seeded, { onConflict: "normalized_key", ignoreDuplicates: true });
-    if (inserted.error) throw new Error("Shared skill catalog could not be initialized. Apply the latest Supabase migration, then retry.");
+    if (inserted.error) {
+      console.error("Shared skill catalog seed failed:", inserted.error.code ?? "unknown", inserted.error.message);
+      throw new Error("Shared skill catalog could not be initialized. Check the server log for the database error, then retry.");
+    }
     rows = [...rows, ...missingSeed.map((entry) => ({
       canonical: entry.canonical,
       normalized_key: normalizeCatalogTerm(entry.canonical),
