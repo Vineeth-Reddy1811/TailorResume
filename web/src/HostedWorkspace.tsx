@@ -337,6 +337,8 @@ export default function HostedWorkspace({ user, authBusy, themeMode, onSignOut, 
         runsRemaining: Number(payload.access.runsRemaining ?? 0),
         ...(typeof payload.access.model === "string" ? { model: payload.access.model } : {}),
       });
+      setAiSource("platform");
+      setAiConsent(false);
       setInviteCode("");
       setAccountNotice(`TailorResume AI is active. ${payload.access.runsRemaining ?? 0} of ${payload.access.runsGranted ?? 0} runs remain.`);
       navigateTo("/");
@@ -551,7 +553,7 @@ export default function HostedWorkspace({ user, authBusy, themeMode, onSignOut, 
           <section className="intro" aria-labelledby="settings-title">
             <p className="eyebrow">ACCOUNT SETTINGS <span>·</span> AI PROVIDERS</p>
             <h1 id="settings-title">AI access and models.</h1>
-            <p className="intro-copy">Manage your own provider keys or activate your invitation to use TailorResume’s shared AI access.</p>
+            <p className="intro-copy">Manage your provider keys and models here. Enter an AI access code from the main workspace.</p>
           </section>
           {accountError && <div className="error-message hosted-feedback" role="alert"><span aria-hidden="true">!</span>{accountError}</div>}
           {accountNotice && <div className="account-notice hosted-feedback" role="status">{accountNotice}</div>}
@@ -565,14 +567,8 @@ export default function HostedWorkspace({ user, authBusy, themeMode, onSignOut, 
               : platformAccess.redeemed
                 ? <p className="hosted-help-copy">Your invitation is active. {platformAccess.runsRemaining} of {platformAccess.runsGranted} included runs remain. {platformAccess.runsRemaining === 0 ? "Connect your own provider key to keep tailoring resumes." : "No personal AI API key is needed."}</p>
                 : <>
-                  <p className="hosted-help-copy">Enter your private access code to use TailorResume’s OpenAI connection. Each account receives up to three tailoring runs. The job description and relevant resume bullets are sent to OpenAI when you start a run.</p>
-                  <form className="invite-code-form" onSubmit={(event) => void redeemPlatformInvite(event)}>
-                    <label htmlFor="platform-ai-invite">AI access code</label>
-                    <div className="invite-code-controls">
-                      <input id="platform-ai-invite" className="hosted-provider-input" type="password" autoComplete="off" maxLength={200} value={inviteCode} onChange={(event) => setInviteCode(event.target.value)} required />
-                      <button className="primary-button" type="submit" disabled={redeemingInvite || !inviteCode.trim()}>{redeemingInvite ? "Checking…" : "Activate access"}</button>
-                    </div>
-                  </form>
+                  <p className="hosted-help-copy">Invitation access can be activated from the AI access section on your main workspace.</p>
+                  <button className="secondary-button" type="button" onClick={() => navigateTo("/")}>Go to workspace</button>
                 </>}
           </section>
           {providerSettingsPanel}
@@ -681,8 +677,14 @@ export default function HostedWorkspace({ user, authBusy, themeMode, onSignOut, 
                   <span className="ai-access-option-description">Connect your own provider key to continue tailoring resumes.</span>
                 </div> : platformAccess.enabled ? <div className="ai-access-option is-unavailable">
                   <span className="ai-access-option-title"><strong>Included TailorResume AI</strong><span className="ai-access-status">Invitation required</span></span>
-                  <span className="ai-access-option-description">Activate your invitation in AI settings to use included runs.</span>
-                  <button className="text-button" type="button" onClick={() => navigateTo("/settings/ai")}>Activate invitation</button>
+                  <span className="ai-access-option-description">Enter your invitation code to activate included runs. Each account receives up to {platformAccess.runsGranted || 3} runs.</span>
+                  <form className="ai-access-invite-form" onSubmit={(event) => void redeemPlatformInvite(event)}>
+                    <label htmlFor="workspace-platform-ai-invite">AI access code</label>
+                    <div className="invite-code-controls">
+                      <input id="workspace-platform-ai-invite" className="hosted-provider-input" type="password" autoComplete="off" maxLength={200} value={inviteCode} onChange={(event) => setInviteCode(event.target.value)} required />
+                      <button className="primary-button" type="submit" disabled={redeemingInvite || !inviteCode.trim()}>{redeemingInvite ? "Checking…" : "Activate"}</button>
+                    </div>
+                  </form>
                 </div> : null}
                 {availableTailoringProviders.length === 0 && !platformAccess.enabled && !platformAccess.redeemed && <div className="ai-access-option is-unavailable">
                   <span className="ai-access-option-title"><strong>AI access is not set up</strong><span className="ai-access-status">Action needed</span></span>

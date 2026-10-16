@@ -443,10 +443,13 @@ label.ai-access-option { cursor: pointer; }
 .settings-inline-notice { margin: 9px 0 0; color: var(--success); font-size: 11px; }
 .platform-ai-card { border-color: var(--accent-border); background: linear-gradient(135deg, var(--surface), var(--accent-soft)); }
 .platform-ai-card .hosted-help-copy { max-width: 720px; }
-.invite-code-form { display: grid; gap: 8px; max-width: 590px; margin-top: 18px; }
-.invite-code-form > label, .hosted-tailoring-form > label:not(.hosted-consent-row) { color: var(--text-primary); font-size: 12px; font-weight: 700; }
+.hosted-tailoring-form > label:not(.hosted-consent-row) { color: var(--text-primary); font-size: 12px; font-weight: 700; }
 .invite-code-controls { display: flex; align-items: center; gap: 10px; }
 .invite-code-controls .primary-button { flex: 0 0 auto; }
+.ai-access-invite-form { display: grid; gap: 6px; margin-left: 24px; }
+.ai-access-invite-form > label { color: var(--text-secondary); font-size: 10px; font-weight: 700; }
+.ai-access-invite-form .hosted-provider-input { min-height: 36px; padding: 7px 9px; font-size: 11px; }
+.ai-access-invite-form .primary-button { min-height: 36px; padding: 0 12px; font-size: 10px; }
 .status-pill { padding: 6px 10px; border: 1px solid var(--accent-border); border-radius: 999px; background: var(--accent-soft); color: var(--accent-text); font-size: 10px; font-weight: 700; }
 .hosted-feedback { margin-top: 16px; }
 .inline-link-button { padding: 0; border: 0; background: transparent; color: var(--accent); font: inherit; font-weight: 700; text-decoration: underline; cursor: pointer; }
@@ -473,6 +476,8 @@ label.ai-access-option { cursor: pointer; }
   .hosted-provider-footer { align-items: flex-start; flex-direction: column; }
   .invite-code-controls { align-items: stretch; flex-direction: column; }
   .invite-code-controls .primary-button { width: 100%; }
+  .ai-access-options { grid-template-columns: 1fr; }
+  .ai-access-invite-form { margin-left: 0; }
   .ai-access-intro { align-items: flex-start; flex-direction: column; }
   .ai-access-card-heading { grid-template-columns: 34px minmax(0, 1fr); }
   .ai-access-icon { width: 34px; height: 34px; }
@@ -497,7 +502,6 @@ label.ai-access-option { cursor: pointer; }
   .catalog-review-fields { grid-template-columns: 1fr; }
   .workspace-submit-row, .ai-access-intro { align-items: stretch; flex-direction: column; }
   .workspace-submit-row .primary-button, .ai-access-card-actions .primary-button { width: 100%; }
-  .ai-access-options { grid-template-columns: 1fr; }
   .ai-access-card-actions { align-items: stretch; flex-direction: column-reverse; }
   .workspace-resume-status { align-items: flex-start; flex-wrap: wrap; }
   .workspace-provider-picker { max-width: none; }
