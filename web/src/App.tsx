@@ -5,11 +5,11 @@ import ReviewPanel from "./ReviewPanel";
 import TailoringWorkspace from "./TailoringWorkspace";
 import ResumeProfilePanel from "./ResumeProfilePanel";
 import SkillCatalogReview from "./SkillCatalogReview";
+import ThemeToggle, { type ThemeMode } from "./ThemeToggle";
 import { clearLocalDraft, loadLocalDraft, localSessionRetentionMs, saveLocalDraft, subscribeToLocalDraftClear } from "./localSession";
 
 const maxResumeSize = 15 * 1024 * 1024;
 const localSessionRetentionDays = localSessionRetentionMs / (24 * 60 * 60 * 1000);
-type ThemeMode = "system" | "light" | "dark";
 type AppMode = "loading" | "local" | "hosted" | "unavailable";
 
 function savedTheme(): ThemeMode {
@@ -27,6 +27,7 @@ export default function App() {
   const [authError, setAuthError] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
   const [themeMode, setThemeMode] = useState<ThemeMode>(savedTheme);
+  const themeTransitionTimer = useRef<number | null>(null);
   const [resume, setResume] = useState<File | null>(null);
   const [resumeProfile, setResumeProfile] = useState<ResumeProfileView | null>(null);
   const [profileLoading, setProfileLoading] = useState(false);
@@ -273,7 +274,24 @@ export default function App() {
   }, [draftLoaded, draftStorageReady, resume, jobDescription, draftSaveRetry]);
 
   function cycleTheme() {
-    setThemeMode((current) => current === "system" ? "light" : current === "light" ? "dark" : "system");
+    const root = document.documentElement;
+    const nextMode: ThemeMode = themeMode === "system" ? "light" : themeMode === "light" ? "dark" : "system";
+    const nextAppearance = nextMode === "system"
+      ? window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"
+      : nextMode;
+    if (root.dataset.theme !== nextAppearance && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      root.classList.add("theme-transitioning");
+      if (themeTransitionTimer.current !== null) window.clearTimeout(themeTransitionTimer.current);
+      themeTransitionTimer.current = window.setTimeout(() => {
+        root.classList.remove("theme-transitioning");
+        themeTransitionTimer.current = null;
+      }, 1720);
+    } else {
+      root.classList.remove("theme-transitioning");
+      if (themeTransitionTimer.current !== null) window.clearTimeout(themeTransitionTimer.current);
+      themeTransitionTimer.current = null;
+    }
+    setThemeMode(nextMode);
   }
 
   function beginGoogleSignIn() {
@@ -482,10 +500,7 @@ export default function App() {
             <span>tailor<span className="brand-light">resume</span></span>
           </a>
           <div className="topbar-actions">
-            <button className="theme-toggle" type="button" onClick={cycleTheme} aria-label={`Theme setting: ${themeMode}. Activate to change theme`} title="Cycles between system, light, and dark themes">
-              <span aria-hidden="true">{themeMode === "dark" ? "☾" : themeMode === "light" ? "☀" : "◐"}</span>
-              <span>{themeMode === "system" ? "System" : themeMode === "light" ? "Light" : "Dark"}</span>
-            </button>
+            <ThemeToggle mode={themeMode} onCycle={cycleTheme} />
             {hostedUser && <button className="secondary-button" type="button" onClick={signOutHostedUser} disabled={authBusy}>{authBusy ? "Signing out…" : "Sign out"}</button>}
           </div>
         </header>
@@ -513,10 +528,7 @@ export default function App() {
           <span>tailor<span className="brand-light">resume</span></span>
         </a>
         <div className="topbar-actions">
-          <button className="theme-toggle" type="button" onClick={cycleTheme} aria-label={`Theme setting: ${themeMode}. Activate to change theme`} title="Cycles between system, light, and dark themes">
-            <span aria-hidden="true">{themeMode === "dark" ? "☾" : themeMode === "light" ? "☀" : "◐"}</span>
-            <span>{themeMode === "system" ? "System" : themeMode === "light" ? "Light" : "Dark"}</span>
-          </button>
+          <ThemeToggle mode={themeMode} onCycle={cycleTheme} />
       <div className="privacy-badge"><span className="privacy-dot" />Local app · ChatGPT plan drafting</div>
         </div>
       </header>

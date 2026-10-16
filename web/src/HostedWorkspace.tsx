@@ -4,6 +4,7 @@ import ReviewPanel from "./ReviewPanel";
 import TailoringWorkspace from "./TailoringWorkspace";
 import ResumeProfilePanel from "./ResumeProfilePanel";
 import SkillCatalogReview from "./SkillCatalogReview";
+import ThemeToggle, { type ThemeMode } from "./ThemeToggle";
 
 type HostedProvider = HostedProviderConnection["provider"];
 type HostedTailoringProvider = Extract<HostedProvider, "anthropic" | "openai">;
@@ -25,7 +26,7 @@ function providerLabel(provider: HostedProvider): string {
 interface HostedWorkspaceProps {
   user: AuthenticatedAppUser;
   authBusy: boolean;
-  themeMode: "system" | "light" | "dark";
+  themeMode: ThemeMode;
   onSignOut: () => void;
   onCycleTheme: () => void;
 }
@@ -551,10 +552,7 @@ export default function HostedWorkspace({ user, authBusy, themeMode, onSignOut, 
         {route.page === "workspace"
           ? <button className="secondary-button" type="button" onClick={() => navigateTo("/settings/ai")}>AI settings</button>
           : <button className="secondary-button" type="button" onClick={() => navigateTo("/")}>Back to workspace</button>}
-        <button className="theme-toggle" type="button" onClick={onCycleTheme} aria-label={`Theme setting: ${themeMode}. Activate to change theme`} title="Cycles between system, light, and dark themes">
-          <span aria-hidden="true">{themeMode === "dark" ? "☾" : themeMode === "light" ? "☀" : "◐"}</span>
-          <span>{themeMode === "system" ? "System" : themeMode === "light" ? "Light" : "Dark"}</span>
-        </button>
+        <ThemeToggle mode={themeMode} onCycle={onCycleTheme} />
         <button className="secondary-button" type="button" onClick={onSignOut} disabled={authBusy}>{authBusy ? "Signing out…" : "Sign out"}</button>
       </div>
     </header>
