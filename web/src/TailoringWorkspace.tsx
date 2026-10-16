@@ -86,7 +86,7 @@ export default function TailoringWorkspace({
         {profileContent}
       </StepCard>
 
-      <StepCard number="02" label="AI ACCESS" title="Choose how to use AI">
+      <StepCard number="02" label="AI SETUP" title="AI for this run">
         {aiAccessContent}
       </StepCard>
 

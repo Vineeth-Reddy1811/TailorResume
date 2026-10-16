@@ -649,29 +649,53 @@ export default function HostedWorkspace({ user, authBusy, themeMode, onSignOut, 
           catalogReviewContent={<SkillCatalogReview />}
           aiAccessContent={(
             <>
-              <div className="workspace-ai-header">
-                <p className="hosted-help-copy">
-                  {platformAccess.redeemed
-                    ? platformAccess.runsRemaining > 0
-                      ? `TailorResume AI: ${platformAccess.runsRemaining} of ${platformAccess.runsGranted} included runs remain.`
-                      : "Your included TailorResume AI runs are used. Add your own provider key to continue."
-                    : "Use your own provider key, or activate an invitation for included TailorResume AI runs."}
-                </p>
-                <button className="secondary-button" type="button" onClick={() => navigateTo("/settings/ai")}>AI settings</button>
+              <div className="ai-access-intro">
+                <p>Choose who provides AI for this run. Each option shows how usage is billed.</p>
+                <button className="text-button" type="button" onClick={() => navigateTo("/settings/ai")}>Manage AI access</button>
               </div>
-              <span className="field-meta">{aiSource === "platform" ? `TailorResume AI · ${platformAccess.model ?? "shared model"}` : `${providerLabel(activeTailoringProvider)} · ${providerConnections.find((item) => item.provider === activeTailoringProvider)?.selected_model ?? "model not selected"}`}</span>
-              {(availableTailoringProviders.length > 0 || (platformAccess.redeemed && platformAccess.runsRemaining > 0)) && <fieldset className="ai-source-picker">
-                <legend>AI access</legend>
-                {availableTailoringProviders.length > 0 && <label><input type="radio" name="ai-source" checked={aiSource === "user"} onChange={() => { setAiSource("user"); setAiConsent(false); }} /> Use my API key</label>}
-                {platformAccess.redeemed && platformAccess.runsRemaining > 0 && <label><input type="radio" name="ai-source" checked={aiSource === "platform"} onChange={() => { setAiSource("platform"); setAiConsent(false); }} /> Use TailorResume AI ({platformAccess.runsRemaining} runs left)</label>}
-              </fieldset>}
+              <fieldset className="ai-access-options">
+                <legend className="visually-hidden">Choose AI access and billing</legend>
+                {availableTailoringProviders.length > 0 ? <label className={`ai-access-option${aiSource === "user" ? " is-selected" : ""}`}>
+                  <span className="ai-access-option-title">
+                    <input type="radio" name="ai-source" checked={aiSource === "user"} onChange={() => { setAiSource("user"); setAiConsent(false); }} />
+                    <strong>My API key</strong>
+                    <span className="ai-access-status is-connected">Connected</span>
+                  </span>
+                  <span className="ai-access-option-description">Usage is billed by {providerLabel(activeTailoringProvider)} under your provider account.</span>
+                  {aiSource === "user" && <span className="ai-access-option-detail">{providerLabel(activeTailoringProvider)} · {providerConnections.find((item) => item.provider === activeTailoringProvider)?.selected_model ?? "model not selected"}</span>}
+                </label> : <div className="ai-access-option is-unavailable">
+                  <span className="ai-access-option-title"><strong>My API key</strong><span className="ai-access-status">Not connected</span></span>
+                  <span className="ai-access-option-description">Connect a provider key in AI settings. Usage is billed by that provider.</span>
+                  <button className="text-button" type="button" onClick={() => navigateTo("/settings/ai")}>Connect a key</button>
+                </div>}
+                {platformAccess.redeemed && platformAccess.runsRemaining > 0 ? <label className={`ai-access-option${aiSource === "platform" ? " is-selected" : ""}`}>
+                  <span className="ai-access-option-title">
+                    <input type="radio" name="ai-source" checked={aiSource === "platform"} onChange={() => { setAiSource("platform"); setAiConsent(false); }} />
+                    <strong>Included TailorResume AI</strong>
+                    <span className="ai-access-status is-connected">{platformAccess.runsRemaining} runs left</span>
+                  </span>
+                  <span className="ai-access-option-description">No personal API key needed. {platformAccess.runsRemaining} of {platformAccess.runsGranted} included runs remain.</span>
+                  {aiSource === "platform" && <span className="ai-access-option-detail">OpenAI · {platformAccess.model ?? "shared model"}</span>}
+                </label> : platformAccess.redeemed ? <div className="ai-access-option is-unavailable">
+                  <span className="ai-access-option-title"><strong>Included TailorResume AI</strong><span className="ai-access-status">No runs left</span></span>
+                  <span className="ai-access-option-description">Connect your own provider key to continue tailoring resumes.</span>
+                </div> : platformAccess.enabled ? <div className="ai-access-option is-unavailable">
+                  <span className="ai-access-option-title"><strong>Included TailorResume AI</strong><span className="ai-access-status">Invitation required</span></span>
+                  <span className="ai-access-option-description">Activate your invitation in AI settings to use included runs.</span>
+                  <button className="text-button" type="button" onClick={() => navigateTo("/settings/ai")}>Activate invitation</button>
+                </div> : null}
+                {availableTailoringProviders.length === 0 && !platformAccess.enabled && !platformAccess.redeemed && <div className="ai-access-option is-unavailable">
+                  <span className="ai-access-option-title"><strong>AI access is not set up</strong><span className="ai-access-status">Action needed</span></span>
+                  <span className="ai-access-option-description">Connect your own provider key in AI settings to start tailoring.</span>
+                  <button className="text-button" type="button" onClick={() => navigateTo("/settings/ai")}>Set up AI access</button>
+                </div>}
+              </fieldset>
               {aiSource === "user" && availableTailoringProviders.length > 0 && <label className="workspace-provider-picker" htmlFor="hosted-ai-provider">
                 <span>AI provider</span>
                 <select id="hosted-ai-provider" className="hosted-provider-input" value={activeTailoringProvider} onChange={(event) => { setTailoringProvider(event.target.value as HostedTailoringProvider); setAiConsent(false); }}>
                   {availableTailoringProviders.map((provider) => <option key={provider} value={provider}>{providerLabel(provider)}</option>)}
                 </select>
               </label>}
-              {aiSource === "user" && availableTailoringProviders.length === 0 && <p className="hosted-empty-state">{platformAccess.redeemed ? "Your included TailorResume AI runs are used. Connect your own provider key to continue." : "Connect a provider key or activate TailorResume AI access in"} <button className="inline-link-button" type="button" onClick={() => navigateTo("/settings/ai")}>AI settings</button>.</p>}
             </>
           )}
           jobDescription={jobDescription}

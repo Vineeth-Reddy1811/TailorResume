@@ -566,13 +566,18 @@ export default function App() {
               profileContent={<ResumeProfilePanel profile={resumeProfile} loading={profileLoading} saving={profileSaving} error={profileError} onSave={saveResumeProfile} />}
               catalogReviewContent={<SkillCatalogReview />}
               aiAccessContent={(
-                <div className="workspace-ai-connection">
-                  <div className="chatgpt-connection-copy">
-                    <strong>{chatGPTConnected ? "ChatGPT plan connected" : "Connect your ChatGPT plan"}</strong>
-                    <span>{chatGPTConnected ? (chatGPTAccount || "Plan usage is enabled for this local app.") : "Authorize ChatGPT plan usage. No API key or separate API billing setup is used."}</span>
-                    {chatGPTNotice && <p className="chatgpt-notice" role="status">{chatGPTNotice}</p>}
+                <div className="ai-access-card ai-access-local">
+                  <div className="ai-access-card-heading">
+                    <div className="ai-access-icon" aria-hidden="true">✳</div>
+                    <div className="ai-access-copy">
+                      <span className="step-label">PERSONAL CHATGPT PLAN</span>
+                      <strong>Use your ChatGPT plan</strong>
+                      <span>{chatGPTConnected ? (chatGPTAccount || "Plan usage is connected for this local app.") : "Uses your ChatGPT plan. No API key or separate API billing setup."}</span>
+                    </div>
+                    <span className={`ai-access-status${chatGPTConnected ? " is-connected" : ""}`}>{chatGPTConnected ? "Connected" : "Not connected"}</span>
                   </div>
-                  <div className="chatgpt-connection-actions">
+                  {chatGPTNotice && <p className="chatgpt-notice" role="status">{chatGPTNotice}</p>}
+                  <div className="ai-access-card-actions">
                     {chatGPTConnected && <a className="text-button" href="https://chatgpt.com/settings/usage" target="_blank" rel="noreferrer">Manage usage</a>}
                     {chatGPTConnected
                       ? <button className="secondary-button" type="button" disabled={chatGPTBusy} onClick={disconnectChatGPT}>Disconnect</button>
